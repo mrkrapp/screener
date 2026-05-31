@@ -1,0 +1,38 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Distribution / build
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Local environment files (never commit secrets)
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Generated outputs — keep `data/processed/` tracked as a directory but ignore artifacts
+data/processed/*.html
+data/processed/*.json
+data/processed/*.csv
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,6 @@
+# Runtime dependencies for live mode.
+# Offline-test mode requires NONE of these.
+
+ccxt>=4.0,<5
+# Optional: nicer .env parsing. App falls back to a tiny inline parser if missing.
+python-dotenv>=1.0
