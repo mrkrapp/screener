@@ -190,12 +190,13 @@ After the top table is printed, the CLI writes a self-contained HTML report:
 TradingView report: data/processed/tradingview_report.html
 ```
 
-The file is a single dark master-detail workspace:
+The file is a single dark chart-first workspace:
 
-- one active TradingView chart occupies the left side
-- every top-N market is selectable from the list on the right
-- clicking any market immediately replaces the active chart
-- search filters the market list
+- the first ranked market opens immediately in the TradingView chart on the left
+- the right side keeps compact Overview, Structure, Derivatives, and Signals panels
+- the asset selector opens on demand above the right panel and includes every top-N market
+- selecting any market immediately replaces the chart and refreshes every analytics panel
+- search filters the asset selector without shrinking the chart
 - 5m / 15m / 1h / 4h / 1D interval controls are available
 - the external-link icon opens the selected market on TradingView
 - `?asset=BINANCE:BTCUSDT.P` restores a selected market when the report opens
@@ -206,7 +207,7 @@ create dozens of simultaneous chart iframes.
 > **Internet required to view charts.** The HTML file itself is static and
 > self-contained, but the embedded TradingView widget loads
 > `https://s3.tradingview.com/tv.js` in your browser. Without internet the
-> page still opens and shows the market list, with a clear chart-unavailable state.
+> page still opens and shows the analytics panels, with a clear chart-unavailable state.
 
 ### Disabling the report
 
