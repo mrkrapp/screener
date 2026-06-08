@@ -63,6 +63,8 @@ class AppConfig:
     tradingview_exchange_prefix: str
     tradingview_interval: str
     tradingview_report_path: str
+    # Signal-quality threshold. Funding pressure = abs(funding_rate) / this.
+    signal_funding_abs_threshold: float
 
     @staticmethod
     def from_env() -> "AppConfig":
@@ -79,5 +81,8 @@ class AppConfig:
             tradingview_interval=os.environ.get("TRADINGVIEW_INTERVAL", "60"),
             tradingview_report_path=os.environ.get(
                 "TRADINGVIEW_REPORT_PATH", "data/processed/tradingview_report.html"
+            ),
+            signal_funding_abs_threshold=float(
+                os.environ.get("SIGNAL_FUNDING_ABS_THRESHOLD", "0.0003")
             ),
         )

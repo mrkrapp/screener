@@ -1,4 +1,4 @@
-"""Pipeline glue: raw inputs → metrics → scored rows.
+"""Pipeline glue: raw inputs → metrics → scored rows → quality-enriched rows.
 
 Kept separate from the CLI and from each metric module so individual modules
 stay testable in isolation.
@@ -11,6 +11,7 @@ from typing import List
 from app.metrics import derivatives, price, volatility, volume
 from app.models import MarketScanInput, ScreenerRow
 from app.scoring import score_row
+from app.signals.detector import enrich_with_quality
 
 
 def build_row(item: MarketScanInput) -> ScreenerRow:
@@ -38,6 +39,11 @@ def build_row(item: MarketScanInput) -> ScreenerRow:
     return score_row(row)
 
 
-def run_pipeline(inputs: List[MarketScanInput]) -> List[ScreenerRow]:
-    """Apply `build_row` to every input. Side-effect free."""
-    return [build_row(i) for i in inputs]
+def run_pipeline(
+    inputs: List[MarketScanInput],
+    *,
+    funding_threshold: float = 0.0003,
+) -> List[ScreenerRow]:
+    """Apply metrics → scoring → quality enrichment. Side-effect free."""
+    rows = [build_row(i) for i in inputs]
+    return [enrich_with_quality(r, funding_threshold=funding_threshold) for r in rows]

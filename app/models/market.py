@@ -4,16 +4,20 @@ The flow is:
     collector  → MarketScanInput[]
     metrics    → MarketScanInput + derived numbers → ScreenerRow
     scoring    → ScreenerRow (fills `score` + `signals`)
+    detector   → ScreenerRow (enriched with quality metrics)
     output     → ScreenerRow[] → console table
 
 Keeping these dataclasses immutable (`frozen=True` where reasonable) lets us
 pass them between modules without worrying about side-effects.
+
+`ScreenerResult` is an alias of `ScreenerRow` kept for code that references
+the spec name. Both refer to the same dataclass.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 
 @dataclass(frozen=True)
@@ -68,3 +72,17 @@ class ScreenerRow:
     derivatives_score: float   # 0-100 composite from OI + funding
     score: float = 0.0         # 0-100 overall, filled by scoring module
     signals: List[str] = field(default_factory=list)
+    # --- Quality metrics (filled by app/signals/detector.enrich_with_quality) ---
+    atr_percent: Optional[float] = None
+    price_move_atr: Optional[float] = None
+    dollar_volume_current: Optional[float] = None
+    dollar_volume_avg: Optional[float] = None
+    volume_confirmation: Optional[float] = None
+    trend_alignment: str = "INSUFFICIENT_DATA"
+    oi_confirmation: str = "INSUFFICIENT_DATA"
+    funding_pressure: Optional[float] = None
+    quality_score: float = 0.0
+
+
+# Alias kept for code that follows the spec's `ScreenerResult` naming.
+ScreenerResult = ScreenerRow

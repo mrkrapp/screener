@@ -22,8 +22,13 @@ from typing import List, Sequence
 
 from app.config import AppConfig
 from app.models import MarketScanInput, ScreenerRow
-from app.output import render_compact_view, render_top_table
+from app.output import (
+    render_compact_view,
+    render_signal_context_block,
+    render_top_table,
+)
 from app.pipeline import run_pipeline
+from app.signals import build_signal_context
 
 
 def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -79,6 +84,25 @@ def _maybe_write_report(
     print(f"TradingView report: {output_path}")
 
 
+def _print_signal_context(
+    rows: List[ScreenerRow],
+    *,
+    config: AppConfig,
+    top: int,
+) -> None:
+    """Build a SignalContext per top-N row and print the compact block."""
+    sorted_rows = sorted(rows, key=lambda r: r.score, reverse=True)[:top]
+    contexts = [
+        build_signal_context(
+            r,
+            tradingview_exchange_prefix=config.tradingview_exchange_prefix,
+        )
+        for r in sorted_rows
+    ]
+    print()
+    print(render_signal_context_block(contexts))
+
+
 def _run_offline(config: AppConfig, top: int, *, write_report: bool, compact: bool) -> int:
     from app.data.sample_data import build_offline_inputs, list_scenarios
 
@@ -88,7 +112,10 @@ def _run_offline(config: AppConfig, top: int, *, write_report: bool, compact: bo
         print(f"#  - {scenario.symbol:<22} {scenario.label}", file=sys.stderr)
 
     inputs: List[MarketScanInput] = build_offline_inputs()
-    rows: List[ScreenerRow] = run_pipeline(inputs)
+    rows: List[ScreenerRow] = run_pipeline(
+        inputs,
+        funding_threshold=config.signal_funding_abs_threshold,
+    )
     print(render_top_table(
         rows, top=top,
         title="Top movers (offline-test)",
@@ -101,6 +128,7 @@ def _run_offline(config: AppConfig, top: int, *, write_report: bool, compact: bo
             title="Compact view (offline-test)",
             exchange_prefix=config.tradingview_exchange_prefix,
         ))
+    _print_signal_context(rows, config=config, top=top)
     _maybe_write_report(rows, config=config, top=top, enabled=write_report)
     return 0
 
@@ -130,7 +158,10 @@ def _run_live(config: AppConfig, top: int, *, write_report: bool, compact: bool)
     if not inputs:
         print("warning: collector returned no inputs", file=sys.stderr)
 
-    rows: List[ScreenerRow] = run_pipeline(inputs)
+    rows: List[ScreenerRow] = run_pipeline(
+        inputs,
+        funding_threshold=config.signal_funding_abs_threshold,
+    )
     print(render_top_table(
         rows, top=top,
         title="Top movers (live)",
@@ -143,6 +174,7 @@ def _run_live(config: AppConfig, top: int, *, write_report: bool, compact: bool)
             title="Compact view (live)",
             exchange_prefix=config.tradingview_exchange_prefix,
         ))
+    _print_signal_context(rows, config=config, top=top)
     _maybe_write_report(rows, config=config, top=top, enabled=write_report)
     return 0
 

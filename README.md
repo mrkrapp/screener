@@ -70,17 +70,22 @@ app/
 │   ├── price.py          # change_5m / change_15m / change_1h
 │   ├── volume.py         # average, relative_volume, volume_z
 │   ├── volatility.py     # atr, vol_expansion
-│   └── derivatives.py    # oi_change_pct, derivatives_score
+│   ├── derivatives.py    # oi_change_pct, derivatives_score
+│   └── quality.py        # atr_percent, price_move_atr, quality_score, ...
 ├── scoring/
 │   └── score.py          # compose composite score + signal tags
+├── signals/
+│   ├── detector.py       # enrich_with_quality — fills quality fields on a row
+│   └── context.py        # build_signal_context — direction_hint, reasons, ...
 ├── output/
-│   └── console.py        # plain-stdlib top-table + compact view renderers
+│   └── console.py        # plain-stdlib top-table + compact + context renderers
 └── charts/
     └── tradingview.py    # CCXT → TradingView symbol + HTML report
 
 tests/
 ├── test_offline.py       # network-free smoke test (pipeline + CLI)
-└── test_tradingview.py   # symbol conversion, URL encoding, HTML report
+├── test_tradingview.py   # symbol conversion, URL encoding, HTML report
+└── test_signals.py       # quality metrics + signal context builder
 ```
 
 Separation of concerns is strict:
@@ -96,9 +101,11 @@ Separation of concerns is strict:
 The same columns are rendered in both `--live` and `--offline-test` modes:
 
 `symbol · tv_symbol · price · change_5m · change_15m · change_1h ·
-volume_current · volume_avg · relative_volume · volume_z · atr ·
-vol_expansion · open_interest · oi_change · funding_rate ·
-derivatives_score · score · signals`
+rvol · volume_z · atr · vol_exp · oi_change · funding_rate ·
+deriv_score · score · quality · trend_align · oi_confirm · pm_atr ·
+dol_vol_curr · signals`
+
+The last five columns come from the **signal-quality** layer, see below.
 
 The `tv_symbol` column shows the TradingView ticker the chart helper
 derives from the CCXT symbol. Examples:
@@ -121,6 +128,43 @@ Compact view (offline-test)
   OIUP/USDT:USDT       score  61.20   TV BINANCE:OIUPUSDT.P      [oi_increase, volume_elevated]
   ...
 ```
+
+## Signal-quality metrics
+
+After the base metrics and the composite anomaly score are computed, the
+pipeline runs a second pass that adds **signal-quality** fields to each row.
+Code lives in `app/metrics/quality.py` (pure functions) and
+`app/signals/detector.py` (the enricher). Nothing here generates buy/sell
+recommendations — every field is a descriptive observation.
+
+| Field                    | Meaning                                                                                  |
+|--------------------------|------------------------------------------------------------------------------------------|
+| `quality_score` (0–100)  | Composite quality reading: trend alignment, volume confirmation, OI confirmation, etc.   |
+| `trend_alignment`        | `BULLISH_ALIGNED` / `BEARISH_ALIGNED` / `MIXED_ALIGNMENT` / `INSUFFICIENT_DATA`           |
+| `oi_confirmation`        | `FRESH_LONGS` / `FRESH_SHORTS` / `SHORT_COVERING` / `LONG_UNWIND` / …                     |
+| `price_move_atr`         | Magnitude of the 1h price move expressed in ATR multiples                                |
+| `volume_confirmation`    | `relative_volume * abs(change_1h)` — high when both move together                        |
+| `funding_pressure`       | `abs(funding_rate) / SIGNAL_FUNDING_ABS_THRESHOLD` — `>1` means elevated                 |
+| `dollar_volume_current`  | Approximate dollar turnover this candle                                                  |
+
+### Signal context block
+
+After the compact view, the CLI prints a short **Signal context** block —
+one `compact_summary` line per top-N coin, plus an optional `Risks:` line:
+
+```
+Signal context
+----------------------------------------------------------------------------------------
+  VSPIKE/USDT:USDT | VOLUME_ONLY | Score 82 | Quality 71 | RVOL is 3.4x above normal, ... | MEDIUM
+    Risks: Volume spike without strong price follow-through
+  MOMNT/USDT:USDT | BULLISH_MOMENTUM | Score 68 | Quality 65 | Price moved +2.30% over 1h, ... | MEDIUM
+```
+
+`direction_hint` is one of `BULLISH_MOMENTUM`, `BEARISH_MOMENTUM`,
+`VOLUME_ONLY`, `DERIVATIVES_ANOMALY`, `VOLATILITY_BREAKOUT`, `MIXED`,
+`NEUTRAL`. **It describes recent market behaviour, not a trade idea.**
+`confidence` is one of `HIGH`, `MEDIUM`, `LOW` and reflects how many
+quality conditions agree.
 
 ## TradingView HTML report
 
@@ -182,6 +226,7 @@ All optional (read from `.env` if present, or from process env). See
 | `TRADINGVIEW_EXCHANGE_PREFIX`  | `BINANCE`                                 | Exchange prefix used in the TV ticker.   |
 | `TRADINGVIEW_INTERVAL`         | `60`                                      | "1", "5", "15", "60", "240", "D".        |
 | `TRADINGVIEW_REPORT_PATH`      | `data/processed/tradingview_report.html`  | Where to write the HTML.                 |
+| `SIGNAL_FUNDING_ABS_THRESHOLD` | `0.0003`                                  | Reference funding rate for `funding_pressure`. |
 
 ## Smoke test (offline)
 
