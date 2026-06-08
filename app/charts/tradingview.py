@@ -1,17 +1,4 @@
-"""TradingView helpers.
-
-Three responsibilities, kept independent:
-
-    1. `convert_symbol_to_tradingview` — pure string conversion.
-    2. `tradingview_url`               — build the deep-link URL.
-    3. `generate_tradingview_report`   — write a self-contained HTML file
-                                          with embedded TradingView widgets.
-
-Nothing here computes metrics, scores, or hits the network. The HTML file
-itself references `https://s3.tradingview.com/.../tv.js`, which is fetched
-by the user's browser only when the file is opened. The Python side is
-fully offline-safe.
-"""
+"""TradingView symbol helpers and an interactive master-detail report."""
 
 from __future__ import annotations
 
@@ -28,263 +15,235 @@ from app.models import ScreenerRow
 logger = logging.getLogger(__name__)
 
 
-# ----------------------------------------------------------------------------
-# Symbol conversion
-# ----------------------------------------------------------------------------
-
 def convert_symbol_to_tradingview(symbol: str, exchange_prefix: str = "BINANCE") -> str:
-    """Convert a CCXT-style symbol into a TradingView USDM perpetual ticker.
-
-    Examples:
-        BTC/USDT:USDT      → BINANCE:BTCUSDT.P
-        ETH/USDT:USDT      → BINANCE:ETHUSDT.P
-        SOL/USDT:USDT      → BINANCE:SOLUSDT.P
-        BTCUSDT            → BINANCE:BTCUSDT.P   (already collapsed)
-        BTC/USDT           → BINANCE:BTCUSDT.P   (spot-style — assume perp)
-        BINANCE:BTCUSDT.P  → BINANCE:BTCUSDT.P   (idempotent)
-
-    Empty input returns an empty string.
-    """
+    """Convert a CCXT perpetual symbol to a TradingView perpetual ticker."""
     if not symbol:
         return ""
 
     prefix = (exchange_prefix or "BINANCE").strip().upper()
-    s = symbol.strip()
+    value = symbol.strip()
+    if ":" in value and value.upper().endswith(".P"):
+        return value.upper()
 
-    # Already in TradingView form — only normalise casing.
-    if ":" in s and (s.upper().endswith(".P") or s.upper().endswith(":P")):
-        return s.upper().replace(":P", ".P")
-
-    # Strip the CCXT settlement suffix (`:USDT` etc.)
-    if ":" in s:
-        head, _, _settle = s.partition(":")
-    else:
-        head = s
-
-    # Strip the `/` between base and quote
-    collapsed = head.replace("/", "").upper()
-    if not collapsed:
-        return ""
-
-    return f"{prefix}:{collapsed}.P"
+    market = value.partition(":")[0]
+    collapsed = market.replace("/", "").upper()
+    return f"{prefix}:{collapsed}.P" if collapsed else ""
 
 
 def tradingview_url(symbol: str, exchange_prefix: str = "BINANCE") -> str:
-    """Return the URL-encoded deep link to TradingView's chart page.
-
-    Example:
-        BTC/USDT:USDT → https://www.tradingview.com/chart/?symbol=BINANCE%3ABTCUSDT.P
-    """
-    tv = convert_symbol_to_tradingview(symbol, exchange_prefix)
-    if not tv:
+    tv_symbol = convert_symbol_to_tradingview(symbol, exchange_prefix)
+    if not tv_symbol:
         return ""
-    # `quote` with empty safe list percent-encodes the colon (`:`).
-    return f"https://www.tradingview.com/chart/?symbol={quote(tv, safe='')}"
+    return f"https://www.tradingview.com/chart/?symbol={quote(tv_symbol, safe='')}"
 
 
-# ----------------------------------------------------------------------------
-# HTML report
-# ----------------------------------------------------------------------------
-
-_DARK_CSS = """
+_CSS = """
 :root {
   color-scheme: dark;
-  --bg:        #0f1117;
-  --panel:     #161922;
-  --panel-2:   #1c202b;
-  --border:    #262b38;
-  --text:      #e5e7eb;
-  --muted:     #9ca3af;
-  --dim:       #6b7280;
-  --accent:    #3b82f6;
-  --good:      #22c55e;
-  --bad:       #ef4444;
-  --warn:      #f59e0b;
+  --bg: #0d1016;
+  --panel: #141923;
+  --panel-2: #1a2130;
+  --line: #283143;
+  --text: #e7ebf2;
+  --muted: #8e99ab;
+  --accent: #4f8cff;
+  --good: #2dd4a7;
+  --warn: #f0b429;
 }
 * { box-sizing: border-box; }
+html, body { height: 100%; }
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: var(--bg);
   color: var(--text);
-  -webkit-font-smoothing: antialiased;
+  font-family: Inter, "Segoe UI", Arial, sans-serif;
+  letter-spacing: 0;
 }
 header {
-  padding: 16px 24px;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-header h1 { margin: 0; font-size: 16px; letter-spacing: 0.04em; }
-header .meta { color: var(--muted); font-size: 11px; font-family: monospace; }
-main { padding: 16px 24px; display: grid; gap: 16px;
-       grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); }
-.card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-.card-head {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-  display: grid;
-  gap: 4px;
-}
-.card-head .row {
+  min-height: 58px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
 }
-.symbol { font-weight: 600; font-size: 14px; }
-.tv-symbol {
-  color: var(--muted);
-  font-family: monospace;
-  font-size: 11px;
-  background: var(--panel-2);
-  padding: 1px 6px;
-  border-radius: 3px;
+h1 { margin: 0; font-size: 16px; font-weight: 650; }
+.meta { color: var(--muted); font: 12px ui-monospace, monospace; }
+.workspace {
+  height: calc(100vh - 58px);
+  min-height: 620px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(330px, 28vw);
 }
-.score {
-  font-family: monospace;
-  font-size: 12px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  background: var(--panel-2);
-  color: var(--text);
-  margin-left: auto;
+.chart-pane {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  border-right: 1px solid var(--line);
 }
-.score.high { color: var(--good); }
-.score.low  { color: var(--bad); }
-.signals {
+.chart-toolbar {
+  min-height: 64px;
   display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
 }
-.signal {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  background: var(--panel-2);
+.selected-symbol { font-size: 16px; font-weight: 650; }
+.selected-details { margin-top: 4px; color: var(--muted); font-size: 12px; }
+.toolbar-actions { display: flex; align-items: center; gap: 8px; }
+.intervals {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.intervals button, .asset-row {
+  font: inherit;
+}
+.intervals button {
+  width: 42px;
+  height: 30px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: transparent;
   color: var(--muted);
-  border: 1px solid var(--border);
+  cursor: pointer;
 }
-.signal.warn { color: var(--warn); border-color: rgba(245, 158, 11, 0.4); }
-.signal.bad  { color: var(--bad);  border-color: rgba(239, 68, 68, 0.4); }
-.signal.good { color: var(--good); border-color: rgba(34, 197, 94, 0.4); }
+.intervals button:last-child { border-right: 0; }
+.intervals button.active { background: var(--accent); color: white; }
 .open-tv {
-  font-size: 11px;
-  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
   color: var(--accent);
-  border: 1px solid var(--accent);
-  padding: 2px 8px;
-  border-radius: 3px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  text-decoration: none;
 }
-.open-tv:hover { background: rgba(59, 130, 246, 0.15); }
-.chart {
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  background: var(--panel-2);
-}
-footer {
-  padding: 12px 24px;
-  color: var(--dim);
-  font-size: 11px;
-  border-top: 1px solid var(--border);
-  text-align: center;
-}
-.empty {
-  padding: 48px 24px;
-  text-align: center;
+.chart-frame { position: relative; min-height: 0; background: #10141d; }
+#tradingview_chart { position: absolute; inset: 0; }
+.chart-status {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
   color: var(--muted);
+  background: #10141d;
+  z-index: 2;
+}
+.chart-status.hidden { display: none; }
+.asset-pane {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  background: var(--panel);
+}
+.asset-tools {
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.asset-tools input {
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  outline: none;
+}
+.asset-tools input:focus { border-color: var(--accent); }
+.asset-list { overflow: auto; }
+.asset-row {
+  width: 100%;
+  min-height: 72px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 10px 12px;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+.asset-row:hover { background: var(--panel-2); }
+.asset-row.active {
+  background: rgba(79, 140, 255, 0.13);
+  box-shadow: inset 3px 0 var(--accent);
+}
+.asset-symbol { overflow: hidden; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+.tv-symbol { margin-top: 4px; color: var(--muted); font: 11px ui-monospace, monospace; }
+.chips { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
+.chip {
+  padding: 2px 5px;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-size: 10px;
+}
+.score { color: var(--good); font: 13px ui-monospace, monospace; white-space: nowrap; }
+.empty { padding: 48px 20px; color: var(--muted); text-align: center; }
+@media (max-width: 800px) {
+  header { align-items: flex-start; flex-direction: column; }
+  .workspace {
+    height: auto;
+    min-height: 0;
+    grid-template-columns: 1fr;
+  }
+  .chart-pane { border-right: 0; border-bottom: 1px solid var(--line); }
+  .chart-frame { min-height: 430px; }
+  .asset-pane { max-height: 520px; }
+  .chart-toolbar { align-items: flex-start; flex-direction: column; }
+  .toolbar-actions { width: 100%; justify-content: space-between; }
 }
 """
 
-# JS that runs once per card. It creates one TradingView widget per card.
-# Loaded via the official tv.js library; this requires the browser to be
-# online when the user opens the report.
-_WIDGET_BOOTSTRAP_TEMPLATE = """
-(function () {
-  if (!window.TradingView) return;
-  var cards = __CARDS__;
-  cards.forEach(function (c) {
-    new TradingView.widget({
-      container_id: c.containerId,
-      symbol: c.symbol,
-      interval: c.interval,
-      timezone: "Etc/UTC",
-      theme: "dark",
-      style: "1",
-      locale: "en",
-      toolbar_bg: "#161922",
-      enable_publishing: false,
-      hide_top_toolbar: false,
-      hide_side_toolbar: true,
-      allow_symbol_change: true,
-      autosize: true,
-      studies: ["Volume@tv-basicstudies"]
-    });
-  });
-})();
-"""
 
-
-def _classify_signal(signal: str) -> str:
-    """Pick a CSS tone for a signal string."""
-    s = signal.lower()
-    if "extreme" in s or "outlier" in s:
-        return "warn"
-    if s.startswith("oi_decrease") or "selloff" in s:
-        return "bad"
-    if "spike" in s or "expansion" in s or "momentum" in s or s.startswith("oi_increase"):
-        return "good"
-    return ""
-
-
-def _classify_score(score: float) -> str:
-    if score >= 70:
-        return "high"
-    if score <= 30:
-        return "low"
-    return ""
-
-
-def _build_card_html(
-    *,
-    container_id: str,
+def _row_payload(
     row: ScreenerRow,
-    tv_symbol: str,
-    open_url: str,
-) -> str:
-    """Render the HTML for one card."""
-    signal_chips = "".join(
-        f'<span class="signal {_classify_signal(sig)}">{html.escape(sig)}</span>'
-        for sig in row.signals
-    ) or '<span class="signal">no signals</span>'
-    score_class = _classify_score(row.score)
-    return f"""\
-<article class="card">
-  <div class="card-head">
-    <div class="row">
-      <span class="symbol">{html.escape(row.symbol)}</span>
-      <span class="tv-symbol">{html.escape(tv_symbol)}</span>
-      <span class="score {score_class}">score {row.score:.1f}</span>
-    </div>
-    <div class="row signals">{signal_chips}</div>
-    <div class="row">
-      <a class="open-tv" target="_blank" rel="noopener noreferrer" href="{html.escape(open_url)}">Open TradingView</a>
-    </div>
-  </div>
-  <div class="chart" id="{html.escape(container_id)}"></div>
-</article>"""
+    *,
+    exchange_prefix: str,
+) -> dict:
+    tv_symbol = convert_symbol_to_tradingview(row.symbol, exchange_prefix)
+    return {
+        "symbol": row.symbol,
+        "tvSymbol": tv_symbol,
+        "url": tradingview_url(row.symbol, exchange_prefix),
+        "price": row.price,
+        "score": row.score,
+        "quality": row.quality_score,
+        "change1h": row.change_1h,
+        "signals": list(row.signals),
+    }
 
 
-def _ensure_parent_dir(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _asset_rows(items: Sequence[dict]) -> str:
+    rows: List[str] = []
+    for index, item in enumerate(items):
+        chips = "".join(
+            f'<span class="chip">{html.escape(str(signal))}</span>'
+            for signal in item["signals"]
+        ) or '<span class="chip">no signals</span>'
+        rows.append(
+            f"""<button class="asset-row" type="button" data-index="{index}">
+  <span>
+    <span class="asset-symbol">{html.escape(str(item["symbol"]))}</span>
+    <span class="tv-symbol">{html.escape(str(item["tvSymbol"]))}</span>
+    <span class="chips">{chips}</span>
+  </span>
+  <span class="score">{float(item["score"]):.1f}</span>
+</button>"""
+        )
+    return "\n".join(rows)
 
 
 def generate_tradingview_report(
@@ -294,81 +253,185 @@ def generate_tradingview_report(
     exchange_prefix: str = "BINANCE",
     interval: str = "60",
     top: Optional[int] = None,
-    title: str = "TradingView report",
+    title: str = "crypto_screener — TradingView report",
 ) -> Path:
-    """Write a self-contained HTML report with one TradingView widget per row.
-
-    Args:
-        rows: ScreenerRow objects, typically the already-sorted top-N.
-        output_path: Destination path (relative paths are resolved against cwd).
-        exchange_prefix: TradingView exchange prefix (e.g. "BINANCE").
-        interval: TradingView interval value, e.g. "60" = 1h, "15" = 15m.
-        top: Optional slice limit; when None all rows are rendered.
-        title: Page title.
-
-    Returns:
-        The resolved Path of the file written.
-    """
-    rendered_rows: List[ScreenerRow] = list(rows)
+    """Create a report with one chart and a selectable row for every asset."""
+    rendered_rows = list(rows)
     if top is not None:
         rendered_rows = rendered_rows[:top]
 
-    out = Path(output_path)
-    _ensure_parent_dir(out)
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
 
-    # Empty state — still produce a file so the user has something to open.
     if not rendered_rows:
-        body = f"""<header><h1>{html.escape(title)}</h1></header>
-<div class="empty">No rows in top results — nothing to chart.</div>"""
-        out.write_text(_html_shell(title=title, head_extras="", body=body, scripts=""), encoding="utf-8")
-        logger.info("TradingView report (empty state) written to %s", out)
-        return out
+        output.write_text(
+            _shell(
+                title,
+                f'<header><h1>{html.escape(title)}</h1></header>'
+                '<div class="empty">No rows in top results — nothing to chart.</div>',
+                "",
+            ),
+            encoding="utf-8",
+        )
+        return output
 
-    cards_html: List[str] = []
-    bootstrap_cards: List[dict] = []
-    for i, row in enumerate(rendered_rows):
-        tv_symbol = convert_symbol_to_tradingview(row.symbol, exchange_prefix)
-        if not tv_symbol:
-            continue
-        container_id = f"tv_chart_{i}"
-        cards_html.append(_build_card_html(
-            container_id=container_id,
-            row=row,
-            tv_symbol=tv_symbol,
-            open_url=tradingview_url(row.symbol, exchange_prefix),
-        ))
-        bootstrap_cards.append({
-            "containerId": container_id,
-            "symbol": tv_symbol,
-            "interval": interval,
-        })
-
+    items = [
+        _row_payload(row, exchange_prefix=exchange_prefix)
+        for row in rendered_rows
+        if convert_symbol_to_tradingview(row.symbol, exchange_prefix)
+    ]
+    safe_json = json.dumps(items, ensure_ascii=False).replace("<", "\\u003c")
     body = f"""<header>
   <h1>{html.escape(title)}</h1>
-  <span class="meta">exchange={html.escape(exchange_prefix)} · interval={html.escape(interval)} · rows={len(bootstrap_cards)}</span>
+  <span class="meta">{html.escape(exchange_prefix)} · {len(items)} markets · click any asset</span>
 </header>
-<main>
-{chr(10).join(cards_html)}
-</main>
-<footer>Charts are streamed from TradingView. Open this file in a browser with internet access.</footer>"""
+<main class="workspace">
+  <section class="chart-pane">
+    <div class="chart-toolbar">
+      <div>
+        <div class="selected-symbol" id="selected_symbol">Select a market</div>
+        <div class="selected-details" id="selected_details"></div>
+      </div>
+      <div class="toolbar-actions">
+        <div class="intervals" aria-label="Chart interval">
+          <button type="button" data-interval="5">5m</button>
+          <button type="button" data-interval="15">15m</button>
+          <button type="button" data-interval="60" class="active">1h</button>
+          <button type="button" data-interval="240">4h</button>
+          <button type="button" data-interval="D">1D</button>
+        </div>
+        <a class="open-tv" id="open_tv" href="#" target="_blank" rel="noopener noreferrer"
+           title="Open in TradingView" aria-label="Open in TradingView">↗</a>
+      </div>
+    </div>
+    <div class="chart-frame">
+      <div class="chart-status" id="chart_status">Loading chart…</div>
+      <div id="tradingview_chart"></div>
+    </div>
+  </section>
+  <aside class="asset-pane">
+    <div class="asset-tools">
+      <input id="asset_search" type="search" placeholder="Search symbol…" aria-label="Search symbol">
+    </div>
+    <div class="asset-list" id="asset_list">
+      {_asset_rows(items)}
+    </div>
+  </aside>
+</main>"""
 
-    scripts = f"""<script src="https://s3.tradingview.com/tv.js"></script>
-<script>{_WIDGET_BOOTSTRAP_TEMPLATE.replace("__CARDS__", json.dumps(bootstrap_cards))}</script>"""
+    script = f"""<script src="https://s3.tradingview.com/tv.js"></script>
+<script>
+(() => {{
+  const assets = {safe_json};
+  const defaultInterval = {json.dumps(interval)};
+  let selectedIndex = 0;
+  let selectedInterval = defaultInterval;
+  let renderToken = 0;
 
-    out.write_text(_html_shell(title=title, head_extras="", body=body, scripts=scripts), encoding="utf-8")
-    logger.info("TradingView report written to %s (%d cards)", out, len(bootstrap_cards))
-    return out
+  const list = document.getElementById("asset_list");
+  const status = document.getElementById("chart_status");
+  const chart = document.getElementById("tradingview_chart");
+  const name = document.getElementById("selected_symbol");
+  const details = document.getElementById("selected_details");
+  const openLink = document.getElementById("open_tv");
+
+  function renderChart() {{
+    const token = ++renderToken;
+    const asset = assets[selectedIndex];
+    if (!asset) return;
+    name.textContent = asset.symbol;
+    details.textContent = `${{asset.tvSymbol}} · Score ${{asset.score.toFixed(1)}} · Quality ${{asset.quality.toFixed(1)}} · 1h ${{asset.change1h >= 0 ? "+" : ""}}${{asset.change1h.toFixed(2)}}%`;
+    openLink.href = asset.url;
+    status.textContent = "Loading chart…";
+    status.classList.remove("hidden");
+    chart.replaceChildren();
+    const container = document.createElement("div");
+    container.id = `tv_active_${{token}}`;
+    container.style.width = "100%";
+    container.style.height = "100%";
+    chart.appendChild(container);
+
+    document.querySelectorAll(".asset-row").forEach((row) => {{
+      row.classList.toggle("active", Number(row.dataset.index) === selectedIndex);
+    }});
+
+    if (!window.TradingView) {{
+      status.textContent = "TradingView is unavailable. Check browser internet access.";
+      return;
+    }}
+    new TradingView.widget({{
+      container_id: container.id,
+      symbol: asset.tvSymbol,
+      interval: selectedInterval,
+      timezone: "Etc/UTC",
+      theme: "dark",
+      style: "1",
+      locale: "en",
+      enable_publishing: false,
+      allow_symbol_change: false,
+      hide_side_toolbar: false,
+      autosize: true,
+      studies: ["Volume@tv-basicstudies"],
+      onChartReady: () => {{
+        if (token === renderToken) status.classList.add("hidden");
+      }}
+    }});
+    window.setTimeout(() => {{
+      if (token === renderToken) status.classList.add("hidden");
+    }}, 2500);
+  }}
+
+  function selectAsset(index) {{
+    selectedIndex = index;
+    renderChart();
+    const asset = assets[index];
+    const url = new URL(window.location.href);
+    url.searchParams.set("asset", asset.tvSymbol);
+    history.replaceState({{ asset: asset.tvSymbol }}, "", url);
+  }}
+
+  list.addEventListener("click", (event) => {{
+    const row = event.target.closest(".asset-row");
+    if (row) selectAsset(Number(row.dataset.index));
+  }});
+
+  document.querySelector(".intervals").addEventListener("click", (event) => {{
+    const button = event.target.closest("button[data-interval]");
+    if (!button) return;
+    selectedInterval = button.dataset.interval;
+    document.querySelectorAll(".intervals button").forEach((item) => {{
+      item.classList.toggle("active", item === button);
+    }});
+    renderChart();
+  }});
+
+  document.getElementById("asset_search").addEventListener("input", (event) => {{
+    const query = event.target.value.trim().toLowerCase();
+    document.querySelectorAll(".asset-row").forEach((row) => {{
+      const asset = assets[Number(row.dataset.index)];
+      row.hidden = !(`${{asset.symbol}} ${{asset.tvSymbol}}`.toLowerCase().includes(query));
+    }});
+  }});
+
+  const requested = new URL(window.location.href).searchParams.get("asset");
+  const requestedIndex = assets.findIndex((asset) => asset.tvSymbol === requested);
+  if (requestedIndex >= 0) selectedIndex = requestedIndex;
+  renderChart();
+}})();
+</script>"""
+    output.write_text(_shell(title, body, script), encoding="utf-8")
+    logger.info("TradingView report written to %s (%d selectable markets)", output, len(items))
+    return output
 
 
-def _html_shell(*, title: str, head_extras: str, body: str, scripts: str) -> str:
+def _shell(title: str, body: str, scripts: str) -> str:
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{html.escape(title)}</title>
-  <style>{_DARK_CSS}</style>
-  {head_extras}
+  <style>{_CSS}</style>
 </head>
 <body>
 {body}
@@ -377,14 +440,8 @@ def _html_shell(*, title: str, head_extras: str, body: str, scripts: str) -> str
 </html>"""
 
 
-# ----------------------------------------------------------------------------
-# Public helper for the console layer
-# ----------------------------------------------------------------------------
-
-def annotate_rows_with_tv_symbol(rows: Iterable[ScreenerRow], exchange_prefix: str = "BINANCE") -> List[tuple[ScreenerRow, str]]:
-    """Convenience: pair each row with its TradingView symbol.
-
-    Useful for renderers that want to print `tv_symbol` alongside the row
-    without us mutating `ScreenerRow`.
-    """
-    return [(r, convert_symbol_to_tradingview(r.symbol, exchange_prefix)) for r in rows]
+def annotate_rows_with_tv_symbol(
+    rows: Iterable[ScreenerRow],
+    exchange_prefix: str = "BINANCE",
+) -> List[tuple[ScreenerRow, str]]:
+    return [(row, convert_symbol_to_tradingview(row.symbol, exchange_prefix)) for row in rows]

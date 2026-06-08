@@ -85,7 +85,10 @@ class ReportGenerationTest(unittest.TestCase):
             self.assertIn("tv.js", content)
             self.assertIn("TradingView.widget", content)
             self.assertIn("BINANCE:", content)
-            self.assertIn("Open TradingView", content)
+            self.assertIn("selectAsset", content)
+            self.assertEqual(content.count('id="tradingview_chart"'), 1)
+            self.assertEqual(content.count('class="asset-row"'), 5)
+            self.assertIn("Open in TradingView", content)
 
     def test_empty_rows_produces_empty_state_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

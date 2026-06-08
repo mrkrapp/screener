@@ -302,7 +302,7 @@ class SignalRepository:
             open_interest=metrics.get("open_interest"),
             oi_change_pct=metrics.get("oi_change_pct"),
             funding_rate=metrics.get("funding_rate"),
-            derivatives_score=metrics.get("derivatives_score", 0.0),
+            derivatives_score=metrics.get("derivatives_score"),
             trend_alignment=metrics.get("trend_alignment", "INSUFFICIENT_DATA"),
             oi_confirmation=metrics.get("oi_confirmation", "INSUFFICIENT_DATA"),
             tradingview_symbol=row["tradingview_symbol"],

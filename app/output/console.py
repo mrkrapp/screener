@@ -29,9 +29,9 @@ def _columns() -> Sequence[Tuple[str, int, str]]:
         ("volume_z",           8, "{:>+8.2f}"),
         ("atr",               10, "{:>10.4f}"),
         ("vol_exp",            8, "{:>8.2f}"),
-        ("oi_change",         10, "{:>+10.2f}"),
-        ("funding_rate",      12, "{:>+12.4f}"),
-        ("deriv_score",       11, "{:>11.2f}"),
+        ("oi_change",         10, "{:>10}"),
+        ("funding_rate",      12, "{:>12}"),
+        ("derivatives_score", 17, "{:>17}"),
         ("score",              8, "{:>8.2f}"),
         # --- Quality columns (Part 4) ---
         ("quality",            8, "{:>8.2f}"),
@@ -73,6 +73,9 @@ def render_top_table(
         # Quality fields may be None; pre-format them to fixed-width strings.
         pm_atr_s = _fmt_opt_float(r.price_move_atr, "{:.2f}")
         dv_curr_s = _fmt_opt_float(r.dollar_volume_current, "{:.0f}")
+        oi_change_s = _fmt_opt_float(r.oi_change, "{:+.2f}")
+        funding_s = _fmt_opt_float(r.funding_rate, "{:+.4f}")
+        derivatives_s = _fmt_opt_float(r.derivatives_score, "{:.2f}")
         values = (
             r.symbol,
             tv,
@@ -84,9 +87,9 @@ def render_top_table(
             r.volume_z,
             r.atr,
             r.vol_expansion,
-            r.oi_change,
-            r.funding_rate,
-            r.derivatives_score,
+            oi_change_s,
+            funding_s,
+            derivatives_s,
             r.score,
             r.quality_score,
             r.trend_alignment,

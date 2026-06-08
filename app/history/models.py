@@ -123,7 +123,7 @@ class SignalSnapshot:
     open_interest: Optional[float] = None
     oi_change_pct: Optional[float] = None
     funding_rate: Optional[float] = None
-    derivatives_score: float = 0.0
+    derivatives_score: Optional[float] = None
     trend_alignment: str = "INSUFFICIENT_DATA"
     oi_confirmation: str = "INSUFFICIENT_DATA"
     tradingview_symbol: str = ""
