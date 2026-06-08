@@ -42,6 +42,12 @@ def _maybe_load_dotenv() -> None:
             os.environ[key] = value
 
 
+def _with_suffix(path: str, suffix: str) -> str:
+    """Insert ``suffix`` before a path's extension: a/b.db + _offline -> a/b_offline.db."""
+    p = Path(path)
+    return str(p.with_name(f"{p.stem}{suffix}{p.suffix}"))
+
+
 def _bool_env(name: str, default: bool) -> bool:
     """Parse a truthy string from env. Accepts true/false/1/0/yes/no, case-insensitive."""
     raw = os.environ.get(name)
@@ -65,6 +71,40 @@ class AppConfig:
     tradingview_report_path: str
     # Signal-quality threshold. Funding pressure = abs(funding_rate) / this.
     signal_funding_abs_threshold: float
+    # --- Signal history (Signal Memory) ---
+    signal_history_enabled: bool
+    signal_history_db_path: str
+    signal_history_report_path: str
+    signal_history_export_path: str
+    signal_history_cooldown_minutes: int
+    signal_history_min_score: float
+    signal_history_min_quality: float
+    signal_match_15m_pct: float
+    signal_match_1h_pct: float
+    signal_match_4h_pct: float
+    signal_match_24h_pct: float
+    signal_history_retention_days: int
+
+    def history_match_thresholds(self) -> dict:
+        """Per-horizon match thresholds (%) as a dict the evaluator understands."""
+        return {
+            "15m": self.signal_match_15m_pct,
+            "1h": self.signal_match_1h_pct,
+            "4h": self.signal_match_4h_pct,
+            "24h": self.signal_match_24h_pct,
+        }
+
+    def offline_history_paths(self) -> tuple[str, str, str]:
+        """Return (db, report, csv) paths for offline-test mode.
+
+        Offline history is kept in a *separate* database/report/CSV so synthetic
+        signals never contaminate the live history.
+        """
+        return (
+            _with_suffix(self.signal_history_db_path, "_offline"),
+            _with_suffix(self.signal_history_report_path, "_offline"),
+            _with_suffix(self.signal_history_export_path, "_offline"),
+        )
 
     @staticmethod
     def from_env() -> "AppConfig":
@@ -84,5 +124,27 @@ class AppConfig:
             ),
             signal_funding_abs_threshold=float(
                 os.environ.get("SIGNAL_FUNDING_ABS_THRESHOLD", "0.0003")
+            ),
+            signal_history_enabled=_bool_env("SIGNAL_HISTORY_ENABLED", True),
+            signal_history_db_path=os.environ.get(
+                "SIGNAL_HISTORY_DB_PATH", "data/signals/signal_history.db"
+            ),
+            signal_history_report_path=os.environ.get(
+                "SIGNAL_HISTORY_REPORT_PATH", "data/processed/signal_history_report.html"
+            ),
+            signal_history_export_path=os.environ.get(
+                "SIGNAL_HISTORY_EXPORT_PATH", "data/signals/exports/signal_history.csv"
+            ),
+            signal_history_cooldown_minutes=int(
+                os.environ.get("SIGNAL_HISTORY_COOLDOWN_MINUTES", "60")
+            ),
+            signal_history_min_score=float(os.environ.get("SIGNAL_HISTORY_MIN_SCORE", "60")),
+            signal_history_min_quality=float(os.environ.get("SIGNAL_HISTORY_MIN_QUALITY", "50")),
+            signal_match_15m_pct=float(os.environ.get("SIGNAL_MATCH_15M_PCT", "0.5")),
+            signal_match_1h_pct=float(os.environ.get("SIGNAL_MATCH_1H_PCT", "1.0")),
+            signal_match_4h_pct=float(os.environ.get("SIGNAL_MATCH_4H_PCT", "2.0")),
+            signal_match_24h_pct=float(os.environ.get("SIGNAL_MATCH_24H_PCT", "3.0")),
+            signal_history_retention_days=int(
+                os.environ.get("SIGNAL_HISTORY_RETENTION_DAYS", "180")
             ),
         )

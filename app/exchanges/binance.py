@@ -108,6 +108,35 @@ class BinanceClient:
             for row in raw
         ]
 
+    def fetch_candles_range(
+        self,
+        symbol: str,
+        *,
+        since_ts: int,
+        timeframe: str = "5m",
+        limit: int = 500,
+    ) -> List[Candle]:
+        """Fetch candles starting at ``since_ts`` (unix seconds).
+
+        Used by the history layer to evaluate what happened after a signal.
+        ccxt expects ``since`` in milliseconds.
+        """
+        exchange = self._exchange_or_create()
+        raw = exchange.fetch_ohlcv(
+            symbol, timeframe=timeframe, since=int(since_ts) * 1000, limit=limit
+        )
+        return [
+            Candle(
+                open_time=int(row[0] // 1000),
+                open=float(row[1]),
+                high=float(row[2]),
+                low=float(row[3]),
+                close=float(row[4]),
+                volume=float(row[5]),
+            )
+            for row in raw
+        ]
+
     def fetch_open_interest(self, symbol: str) -> float:
         """Latest open interest in contracts. Returns 0.0 on failure."""
         exchange = self._exchange_or_create()

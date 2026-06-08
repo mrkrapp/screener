@@ -10,16 +10,19 @@ table to the console.
 
 ## Modes
 
-There are exactly two CLI modes:
+Two scan modes plus three history-only commands:
 
-| Mode             | Network | ccxt required | What it does                                |
-|------------------|---------|---------------|---------------------------------------------|
-| `--offline-test` | no      | **no**        | Runs the pipeline on synthetic sample data. |
-| `--live`         | yes     | **yes**       | Runs against real Binance USDM via ccxt.    |
+| Command              | Network | ccxt | What it does                                          |
+|----------------------|---------|------|-------------------------------------------------------|
+| `--offline-test`     | no      | no   | Runs the pipeline on synthetic sample data.           |
+| `--live`             | yes     | yes  | Runs against real Binance USDM via ccxt.              |
+| `--evaluate-history` | yes     | yes  | Evaluates pending history only — no new scan/signals. |
+| `--history-report`   | no      | no   | Rebuilds the Signal Memory HTML from the existing DB. |
+| `--export-history`   | no      | no   | Rebuilds the Signal Memory CSV from the existing DB.  |
 
 The offline mode exists so you can verify the project, the metrics, the
 scoring and the console renderer **without** installing ccxt or having
-network access.
+network access. Add `--no-history` to any scan to skip the Signal Memory cycle.
 
 ## Quick start
 
@@ -77,6 +80,17 @@ app/
 ├── signals/
 │   ├── detector.py       # enrich_with_quality — fills quality fields on a row
 │   └── context.py        # build_signal_context — direction_hint, reasons, ...
+├── history/              # Signal Memory: record + evaluate outcomes
+│   ├── models.py         # SignalSnapshot / SignalOutcome + vocabulary
+│   ├── matcher.py        # fingerprint, snapshot build, de-dup decision
+│   ├── evaluator.py      # pure outcome calc (returns, MFE/MAE, labels, reasons)
+│   ├── repository.py     # SQLite persistence (snapshots + outcomes)
+│   ├── statistics.py     # quality aggregation (by horizon/direction/…)
+│   ├── report.py         # Signal Memory HTML report + CSV export
+│   ├── service.py        # orchestration (record → evaluate → lifecycle)
+│   └── providers.py      # live post-signal candle fetching
+├── storage/
+│   └── migrations.py     # SQLite schema + indexes (stdlib sqlite3)
 ├── output/
 │   └── console.py        # plain-stdlib top-table + compact + context renderers
 └── charts/
@@ -85,7 +99,8 @@ app/
 tests/
 ├── test_offline.py       # network-free smoke test (pipeline + CLI)
 ├── test_tradingview.py   # symbol conversion, URL encoding, HTML report
-└── test_signals.py       # quality metrics + signal context builder
+├── test_signals.py       # quality metrics + signal context builder
+└── test_history.py       # Signal Memory: outcomes, MFE/MAE, SQLite, reports
 ```
 
 Separation of concerns is strict:
@@ -209,6 +224,85 @@ When disabled, no file is written and no path is printed.
 If the pipeline returns zero rows the report file is still produced but
 contains a small `nothing to chart` placeholder instead of widgets.
 
+## Signal Memory (history + outcome evaluation)
+
+The screener remembers the signals it emits and **objectively grades them after
+the fact** — did price actually follow through, and which of the stated reasons
+held up? This is analytics about signal *quality*; it never opens trades, never
+computes account PnL, and never produces buy/sell advice.
+
+### How it works
+
+On every `--live` run (and on `--offline-test`, against a separate test DB):
+
+1. **Record.** Each qualifying top result is frozen into an immutable
+   `SignalSnapshot` (price, score, quality, direction hint, reasons, risk notes,
+   raw metrics, TradingView link). A `fingerprint` of
+   `symbol + direction + sorted(signals) + candle_minute` plus a configurable
+   cooldown prevents the same signal being saved twice.
+2. **Evaluate.** For every open snapshot the evaluator pulls the *closed*
+   candles that followed it and computes, at the **15m / 1h / 4h / 24h**
+   horizons:
+   - `return_pct` and direction-aware `directional_return_pct`
+   - **MFE** (max favourable excursion) and **MAE** (max adverse excursion),
+     normalised so MFE is positive when price moved the expected way
+   - an `outcome_label` (see below)
+   - a matched/failed breakdown of the original `main_reasons`
+3. **Lifecycle.** The snapshot status walks
+   `NEW → TRACKING → PARTIALLY_EVALUATED → COMPLETED` (or `EXPIRED` /
+   `DATA_ERROR`). Past metrics are never rewritten — only the status changes.
+4. **Report.** A separate `signal_history_report.html` and a
+   `signal_history.csv` are regenerated, and a one-line summary is printed.
+
+**No look-ahead bias:** only candles whose *close* is at or before "now" are
+ever read, and an unclosed candle is never used as the horizon price.
+
+### Outcome labels
+
+| Label               | Meaning                                                            |
+|---------------------|--------------------------------------------------------------------|
+| `STRONG_MATCH`      | Right direction, threshold hit, MFE clearly dominates MAE.         |
+| `MATCH`             | Right direction, threshold hit.                                    |
+| `PARTIAL_MATCH`     | Right direction, threshold not reached.                            |
+| `NO_FOLLOW_THROUGH` | Favourable excursion that gave it all back / faded.                |
+| `INVALIDATED`       | Wrong direction; adverse move exceeded the threshold.             |
+| `PENDING`           | Horizon not reached yet.                                           |
+| `EXPIRED`           | Horizon long past with no price data.                             |
+| `NOT_APPLICABLE`    | Neutral hint (no expected side) — graded by realised move only.    |
+
+### Lifecycle
+
+```
+NEW ──▶ TRACKING ──▶ PARTIALLY_EVALUATED ──▶ COMPLETED
+              │                 │
+              └──────▶ EXPIRED ◀┘        (DATA_ERROR on evaluation failure)
+```
+
+### Statistics
+
+The report's summary shows totals, pending/completed counts, and per-horizon
+match / strong-match / invalidation rates plus average MFE/MAE. Breakdowns are
+also computed by direction, confidence, signal label, score bucket, quality
+bucket and symbol. Any group with fewer than `min_sample` (10) evaluated
+directional outcomes is shown as **"insufficient sample: N"** rather than a
+misleading percentage.
+
+> Known limitation: `median_time_to_mfe` is not computed — the evaluator stores
+> the window extreme, not the candle index at which it occurred.
+
+### Commands
+
+```bash
+python -m app.main --live               # scan + record + evaluate + reports
+python -m app.main --evaluate-history   # evaluate pending only (needs ccxt)
+python -m app.main --history-report     # rebuild HTML from the DB
+python -m app.main --export-history     # rebuild CSV from the DB
+python -m app.main --live --no-history  # scan but skip the memory cycle
+```
+
+Offline-test mode writes to *separate* `*_offline` files so synthetic history
+never mixes with live history.
+
 ## Environment variables
 
 All optional (read from `.env` if present, or from process env). See
@@ -227,16 +321,31 @@ All optional (read from `.env` if present, or from process env). See
 | `TRADINGVIEW_INTERVAL`         | `60`                                      | "1", "5", "15", "60", "240", "D".        |
 | `TRADINGVIEW_REPORT_PATH`      | `data/processed/tradingview_report.html`  | Where to write the HTML.                 |
 | `SIGNAL_FUNDING_ABS_THRESHOLD` | `0.0003`                                  | Reference funding rate for `funding_pressure`. |
+| `SIGNAL_HISTORY_ENABLED`       | `true`                                    | Master switch for Signal Memory.         |
+| `SIGNAL_HISTORY_DB_PATH`       | `data/signals/signal_history.db`          | SQLite history database.                 |
+| `SIGNAL_HISTORY_REPORT_PATH`   | `data/processed/signal_history_report.html` | Signal Memory HTML report.             |
+| `SIGNAL_HISTORY_EXPORT_PATH`   | `data/signals/exports/signal_history.csv` | Signal Memory CSV export.                |
+| `SIGNAL_HISTORY_COOLDOWN_MINUTES` | `60`                                   | De-dup window for recording a signal.    |
+| `SIGNAL_HISTORY_MIN_SCORE`     | `60`                                      | Min score to record a signal.            |
+| `SIGNAL_HISTORY_MIN_QUALITY`   | `50`                                      | Min quality to record a signal.          |
+| `SIGNAL_MATCH_15M_PCT`         | `0.5`                                     | 15m match threshold (%).                 |
+| `SIGNAL_MATCH_1H_PCT`          | `1.0`                                     | 1h match threshold (%).                  |
+| `SIGNAL_MATCH_4H_PCT`          | `2.0`                                     | 4h match threshold (%).                  |
+| `SIGNAL_MATCH_24H_PCT`         | `3.0`                                     | 24h match threshold (%).                 |
+| `SIGNAL_HISTORY_RETENTION_DAYS`| `180`                                     | Prune history older than this.           |
 
 ## Smoke test (offline)
 
-The repository includes a no-network test:
+The repository includes no-network tests:
 
 ```bash
-python -m unittest tests.test_offline
+python -m unittest discover -s tests        # everything
+python -m unittest tests.test_offline       # pipeline + CLI
+python -m unittest tests.test_signals        # quality + signal context
+python -m unittest tests.test_history        # Signal Memory
 ```
 
-This verifies that:
+`tests.test_offline` verifies that:
 
 1. Sample data builds without crashing
 2. The pipeline produces one row per scenario
@@ -244,6 +353,12 @@ This verifies that:
 4. `python -m app.main --offline-test` exits with status 0
 5. `python -m app.main --live` (when ccxt is missing) exits with status 2
    and prints the friendly error string
+
+`tests.test_history` covers fingerprint/de-dup, immutable snapshots, bullish &
+bearish outcomes, MFE/MAE, pending vs expired horizons, closed-vs-unclosed
+candles, outcome labels, matched/failed reasons, SQLite insert/upsert, CSV +
+HTML generation, offline/live DB separation, division-by-zero and missing-data
+guards, and timezone-aware timestamps.
 
 ## Offline scenarios
 
