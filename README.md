@@ -377,6 +377,44 @@ output is stable from run to run:
 Each scenario stresses a different subset of the metrics so you can verify
 end-to-end behaviour with one command.
 
+## Running with Docker
+
+For a server deployment you can run the screener in a loop inside Docker, with
+results persisted on the host and the HTML reports served over HTTP.
+
+```bash
+cp .env.example .env   # edit as needed (all values are optional)
+docker compose up -d --build
+```
+
+This starts two containers:
+
+- **`screener`** — runs `python -m app.main --live` every
+  `SCREENER_RUN_INTERVAL_SECONDS` (default 300s = 5 minutes), via
+  [`docker/entrypoint.sh`](docker/entrypoint.sh). A failed run is logged and the
+  loop continues — it never exits the container.
+- **`reports`** — an nginx container serving `data/processed/*.html`
+  (TradingView report + Signal Memory report) at `http://<server>:8080/`.
+
+All persistent state (`data/signals/signal_history.db`, CSV exports, HTML
+reports) lives in `./data` on the host via a bind mount, so it survives
+container rebuilds/restarts.
+
+To run offline-test mode instead (e.g. to verify the image without ccxt/network),
+override the command:
+
+```bash
+docker compose run --rm screener --offline-test --no-history
+```
+
+Useful commands:
+
+```bash
+docker compose logs -f screener   # tail scan output
+docker compose down               # stop containers (data/ is preserved)
+docker compose up -d --build      # rebuild after a code change
+```
+
 ## What this MVP intentionally does NOT include
 
 No Telegram. No database. No dashboard. No Docker. No Bybit. No trading or

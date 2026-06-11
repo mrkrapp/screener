@@ -33,6 +33,11 @@ data/processed/*.html
 data/processed/*.json
 data/processed/*.csv
 
+# Signal Memory runtime data (SQLite DB + CSV exports)
+data/signals/*.db
+data/signals/*.db-*
+data/signals/exports/*.csv
+
 # OS
 .DS_Store
 Thumbs.db

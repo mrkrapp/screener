@@ -1,0 +1,26 @@
+services:
+  # Runs `python -m app.main --live` on a loop (see docker/entrypoint.sh).
+  # All persistent state (SQLite history DB, HTML reports, CSV exports)
+  # lives under ./data on the host via the bind mount below.
+  screener:
+    build: .
+    container_name: crypto_screener
+    env_file:
+      - .env
+    environment:
+      # Seconds between scans. 300 = every 5 minutes.
+      SCREENER_RUN_INTERVAL_SECONDS: "300"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  # Serves data/processed/*.html (TradingView report + Signal Memory report)
+  # as static files so you can open them from a browser pointed at the server.
+  reports:
+    image: nginx:alpine
+    container_name: crypto_screener_reports
+    volumes:
+      - ./data/processed:/usr/share/nginx/html:ro
+    ports:
+      - "8080:80"
+    restart: unless-stopped
