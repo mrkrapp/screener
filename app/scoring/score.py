@@ -32,13 +32,13 @@ def derive_signals(row: ScreenerRow) -> List[str]:
     if row.vol_expansion >= 1.8:
         signals.append("range_expansion")
 
-    if row.oi_change >= 3.0:
+    if row.oi_change is not None and row.oi_change >= 3.0:
         signals.append("oi_increase")
-    elif row.oi_change <= -3.0:
+    elif row.oi_change is not None and row.oi_change <= -3.0:
         signals.append("oi_decrease")
 
-    abs_funding = abs(row.funding_rate)
-    if abs_funding >= 0.1:        # %
+    abs_funding = abs(row.funding_rate) if row.funding_rate is not None else None
+    if abs_funding is not None and abs_funding >= 0.1:        # %
         signals.append("extreme_funding")
 
     return signals
@@ -53,10 +53,20 @@ def compute_score(row: ScreenerRow) -> float:
     momentum_component = min(40.0, abs(row.change_1h) * 3.0)
     rvol_component = min(20.0, (row.relative_volume - 1.0) * 10.0) if row.relative_volume > 1.0 else 0.0
     expansion_component = min(15.0, (row.vol_expansion - 1.0) * 15.0) if row.vol_expansion > 1.0 else 0.0
-    deriv_component = row.derivatives_score * 0.25      # 0-25
+    # Missing derivatives are omitted rather than treated as a real zero.
+    deriv_component = (
+        row.derivatives_score * 0.25
+        if row.derivatives_score is not None
+        else 0.0
+    )
     z_component = min(10.0, max(0.0, row.volume_z * 4.0))
 
     raw = momentum_component + rvol_component + expansion_component + deriv_component + z_component
+    if row.derivatives_score is None:
+        # Optional derivatives data must not silently depress otherwise
+        # comparable rows. Scale the available 85-point component range to the
+        # full 110-point range used when derivatives are present.
+        raw *= 110.0 / 85.0
     return max(0.0, min(100.0, raw))
 
 

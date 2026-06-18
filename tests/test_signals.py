@@ -22,6 +22,7 @@ from app.signals.context import (
     DIR_NEUTRAL,
     DIR_VOLUME_ONLY,
 )
+from app.scoring.score import compute_score
 
 
 def _row(**overrides) -> ScreenerRow:
@@ -250,6 +251,19 @@ class TestBuildSignalContext(unittest.TestCase):
 class TestScreenerResultAlias(unittest.TestCase):
     def test_screener_result_is_alias_of_screener_row(self):
         self.assertIs(ScreenerResult, ScreenerRow)
+
+
+class TestPartialDerivativesScoring(unittest.TestCase):
+    def test_missing_derivatives_are_not_treated_as_zero_score(self):
+        row = _row(
+            change_1h=2.0,
+            relative_volume=2.0,
+            vol_expansion=1.5,
+            volume_z=1.0,
+            derivatives_score=None,
+        )
+        raw_available = 6.0 + 10.0 + 7.5 + 4.0
+        self.assertAlmostEqual(compute_score(row), raw_available * 110.0 / 85.0)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ def build_row(item: MarketScanInput) -> ScreenerRow:
     """Run every metric family for a single input."""
     candles = item.candles
     oi_change = derivatives.oi_change_pct(item.open_interest_current, item.open_interest_prev)
-    funding_pct = item.funding_rate * 100.0    # convert to %
+    funding_pct = item.funding_rate * 100.0 if item.funding_rate is not None else None
     row = ScreenerRow(
         symbol=item.symbol,
         price=price.latest_price(candles),

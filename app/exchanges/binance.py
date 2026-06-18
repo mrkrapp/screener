@@ -71,7 +71,9 @@ class BinanceClient:
     def list_perp_symbols(self, *, quote: str = "USDT", limit: Optional[int] = None) -> List[str]:
         """Return active linear USDT-margined perpetuals.
 
-        Filters to swap markets matching `quote`. Sorted alphabetically.
+        Filters to swap markets matching `quote`, then ranks by reported 24h
+        quote volume. Symbols with missing ticker volume remain eligible but
+        sort behind markets with verified liquidity.
         """
         exchange = self._exchange_or_create()
         exchange.load_markets()
@@ -85,8 +87,22 @@ class BinanceClient:
                 continue
             if market.get("settle") != quote:
                 continue
+            if market.get("linear") is False:
+                continue
+            if market.get("expiry") is not None:
+                continue
             symbols.append(symbol)
-        symbols.sort()
+        try:
+            tickers = exchange.fetch_tickers(symbols)
+        except Exception:
+            tickers = {}
+        symbols.sort(
+            key=lambda item: (
+                _ticker_quote_volume(tickers.get(item)),
+                item,
+            ),
+            reverse=True,
+        )
         if limit is not None:
             symbols = symbols[:limit]
         return symbols
@@ -95,8 +111,7 @@ class BinanceClient:
         """Fetch the most recent `limit` 1-minute candles for `symbol`."""
         exchange = self._exchange_or_create()
         raw = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-        # ccxt returns ms timestamps; we store seconds.
-        return [
+        candles = [
             Candle(
                 open_time=int(row[0] // 1000),
                 open=float(row[1]),
@@ -106,6 +121,13 @@ class BinanceClient:
                 volume=float(row[5]),
             )
             for row in raw
+        ]
+        now_seconds = int(exchange.milliseconds() // 1000)
+        candle_seconds = _timeframe_seconds(timeframe)
+        return [
+            candle
+            for candle in candles
+            if candle.open_time + candle_seconds <= now_seconds
         ]
 
     def fetch_candles_range(
@@ -137,30 +159,52 @@ class BinanceClient:
             for row in raw
         ]
 
-    def fetch_open_interest(self, symbol: str) -> float:
-        """Latest open interest in contracts. Returns 0.0 on failure."""
+    def fetch_open_interest(self, symbol: str) -> Optional[float]:
+        """Latest open interest in contracts. Missing data stays ``None``."""
         exchange = self._exchange_or_create()
-        # ccxt exposes fetch_open_interest for binanceusdm.
         try:
             data = exchange.fetch_open_interest(symbol)
         except Exception:
-            return 0.0
-        if isinstance(data, dict):
-            value = data.get("openInterestAmount") or data.get("openInterest") or 0.0
-            return float(value) if value is not None else 0.0
-        return 0.0
+            return None
+        return _open_interest_value(data)
 
-    def fetch_funding_rate(self, symbol: str) -> float:
-        """Latest funding rate (per-interval, e.g. 0.0001). 0.0 on failure."""
+    def fetch_open_interest_previous(
+        self,
+        symbol: str,
+        *,
+        timeframe: str = "1h",
+    ) -> Optional[float]:
+        """Return the previous completed OI history point.
+
+        Binance exposes this through the public open-interest history endpoint.
+        We deliberately return ``None`` when history is unavailable instead of
+        fabricating a change from the current value.
+        """
+        exchange = self._exchange_or_create()
+        try:
+            history = exchange.fetch_open_interest_history(
+                symbol,
+                timeframe=timeframe,
+                limit=2,
+            )
+        except Exception:
+            return None
+        if not isinstance(history, list) or len(history) < 2:
+            return None
+        ordered = sorted(history, key=lambda item: item.get("timestamp") or 0)
+        return _open_interest_value(ordered[-2])
+
+    def fetch_funding_rate(self, symbol: str) -> Optional[float]:
+        """Latest funding rate. Missing data stays ``None``."""
         exchange = self._exchange_or_create()
         try:
             data = exchange.fetch_funding_rate(symbol)
         except Exception:
-            return 0.0
+            return None
         if isinstance(data, dict):
-            value = data.get("fundingRate") or 0.0
-            return float(value) if value is not None else 0.0
-        return 0.0
+            value = data.get("fundingRate")
+            return _safe_float(value)
+        return None
 
     def server_time(self) -> int:
         """Useful for sanity-checking connectivity."""
@@ -169,3 +213,56 @@ class BinanceClient:
             return int(exchange.milliseconds() // 1000)
         except Exception:
             return int(time.time())
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ticker_quote_volume(ticker: Any) -> float:
+    if not isinstance(ticker, dict):
+        return -1.0
+    value = ticker.get("quoteVolume")
+    parsed = _safe_float(value)
+    if parsed is not None:
+        return parsed
+    info = ticker.get("info")
+    if isinstance(info, dict):
+        parsed = _safe_float(info.get("quoteVolume"))
+        if parsed is not None:
+            return parsed
+    return -1.0
+
+
+def _open_interest_value(data: Any) -> Optional[float]:
+    if not isinstance(data, dict):
+        return None
+    for key in (
+        "openInterestAmount",
+        "openInterest",
+        "baseVolume",
+        "sumOpenInterest",
+    ):
+        parsed = _safe_float(data.get(key))
+        if parsed is not None:
+            return parsed
+    info = data.get("info")
+    if isinstance(info, dict):
+        for key in ("openInterest", "sumOpenInterest"):
+            parsed = _safe_float(info.get(key))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _timeframe_seconds(timeframe: str) -> int:
+    units = {"m": 60, "h": 3600, "d": 86400}
+    try:
+        return int(timeframe[:-1]) * units[timeframe[-1].lower()]
+    except (KeyError, TypeError, ValueError):
+        raise ValueError(f"Unsupported timeframe: {timeframe!r}") from None

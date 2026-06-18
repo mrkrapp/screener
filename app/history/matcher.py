@@ -102,7 +102,7 @@ def build_snapshot(
         open_interest=result.open_interest,
         oi_change_pct=result.oi_change,
         funding_rate=result.funding_rate,
-        derivatives_score=float(result.derivatives_score),
+        derivatives_score=result.derivatives_score,
         trend_alignment=result.trend_alignment,
         oi_confirmation=result.oi_confirmation,
         tradingview_symbol=context.tradingview_symbol,

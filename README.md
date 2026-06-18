@@ -1,7 +1,7 @@
 # crypto_screener
 
 Binance USDT-margined perpetual futures screener (MVP).
-Pulls 1-minute klines + open interest + funding rate, computes momentum /
+Pulls closed 1-minute klines + real open-interest history + funding rate, computes momentum /
 volume / volatility / derivatives metrics, scores each symbol, prints a top
 table to the console.
 
@@ -99,6 +99,7 @@ app/
 tests/
 ├── test_offline.py       # network-free smoke test (pipeline + CLI)
 ├── test_tradingview.py   # symbol conversion, URL encoding, HTML report
+├── test_binance_client.py # liquidity ranking, closed candles, real OI history
 ├── test_signals.py       # quality metrics + signal context builder
 └── test_history.py       # Signal Memory: outcomes, MFE/MAE, SQLite, reports
 ```
@@ -117,7 +118,7 @@ The same columns are rendered in both `--live` and `--offline-test` modes:
 
 `symbol · tv_symbol · price · change_5m · change_15m · change_1h ·
 rvol · volume_z · atr · vol_exp · oi_change · funding_rate ·
-deriv_score · score · quality · trend_align · oi_confirm · pm_atr ·
+derivatives_score · score · quality · trend_align · oi_confirm · pm_atr ·
 dol_vol_curr · signals`
 
 The last five columns come from the **signal-quality** layer, see below.
@@ -189,19 +190,24 @@ After the top table is printed, the CLI writes a self-contained HTML report:
 TradingView report: data/processed/tradingview_report.html
 ```
 
-The file is a single HTML page styled with a dark terminal theme. It
-contains one card per row from the top-N. Each card shows:
+The file is a single dark chart-first workspace:
 
-- the CCXT `symbol` and the derived `tv_symbol`
-- the composite `score`
-- the analytical `signals` tags
-- an **Open TradingView** button — opens `https://www.tradingview.com/chart/?symbol=…`
-- an embedded TradingView chart widget for that ticker
+- the first ranked market opens immediately in the TradingView chart on the left
+- the right side keeps compact Overview, Structure, Derivatives, and Signals panels
+- the asset selector opens on demand above the right panel and includes every top-N market
+- selecting any market immediately replaces the chart and refreshes every analytics panel
+- search filters the asset selector without shrinking the chart
+- 5m / 15m / 1h / 4h / 1D interval controls are available
+- the external-link icon opens the selected market on TradingView
+- `?asset=BINANCE:BTCUSDT.P` restores a selected market when the report opens
+
+Only one TradingView widget exists at a time, so increasing the top-N does not
+create dozens of simultaneous chart iframes.
 
 > **Internet required to view charts.** The HTML file itself is static and
 > self-contained, but the embedded TradingView widget loads
 > `https://s3.tradingview.com/tv.js` in your browser. Without internet the
-> page still opens — you just see empty chart panels.
+> page still opens and shows the analytics panels, with a clear chart-unavailable state.
 
 ### Disabling the report
 
@@ -223,6 +229,21 @@ When disabled, no file is written and no path is printed.
 
 If the pipeline returns zero rows the report file is still produced but
 contains a small `nothing to chart` placeholder instead of widgets.
+
+## Live data integrity
+
+The live collector deliberately avoids several common sources of false precision:
+
+- the universe is ranked by Binance 24h quote volume, not alphabetically
+- inactive, non-linear, non-USDT-settled and expiring markets are excluded
+- the current unclosed candle is removed before metrics are calculated
+- OI change uses Binance's public OI history endpoint
+- missing OI/funding remains `None` and renders as `-`; it is never replaced by zero
+- composite scoring rescales available components when derivatives are unavailable
+- a symbol with a failed candles request is skipped without stopping the scan
+
+Public market data does not require Binance API keys. Values remain observations
+from Binance and CCXT, not guaranteed exchange execution prices.
 
 ## Signal Memory (history + outcome evaluation)
 

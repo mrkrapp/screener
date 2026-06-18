@@ -1,17 +1,4 @@
-"""TradingView helpers.
-
-Three responsibilities, kept independent:
-
-    1. `convert_symbol_to_tradingview` — pure string conversion.
-    2. `tradingview_url`               — build the deep-link URL.
-    3. `generate_tradingview_report`   — write a self-contained HTML file
-                                          with embedded TradingView widgets.
-
-Nothing here computes metrics, scores, or hits the network. The HTML file
-itself references `https://s3.tradingview.com/.../tv.js`, which is fetched
-by the user's browser only when the file is opened. The Python side is
-fully offline-safe.
-"""
+"""TradingView symbol helpers and an interactive chart workspace."""
 
 from __future__ import annotations
 
@@ -28,263 +15,413 @@ from app.models import ScreenerRow
 logger = logging.getLogger(__name__)
 
 
-# ----------------------------------------------------------------------------
-# Symbol conversion
-# ----------------------------------------------------------------------------
-
 def convert_symbol_to_tradingview(symbol: str, exchange_prefix: str = "BINANCE") -> str:
-    """Convert a CCXT-style symbol into a TradingView USDM perpetual ticker.
-
-    Examples:
-        BTC/USDT:USDT      → BINANCE:BTCUSDT.P
-        ETH/USDT:USDT      → BINANCE:ETHUSDT.P
-        SOL/USDT:USDT      → BINANCE:SOLUSDT.P
-        BTCUSDT            → BINANCE:BTCUSDT.P   (already collapsed)
-        BTC/USDT           → BINANCE:BTCUSDT.P   (spot-style — assume perp)
-        BINANCE:BTCUSDT.P  → BINANCE:BTCUSDT.P   (idempotent)
-
-    Empty input returns an empty string.
-    """
+    """Convert a CCXT perpetual symbol to a TradingView perpetual ticker."""
     if not symbol:
         return ""
 
     prefix = (exchange_prefix or "BINANCE").strip().upper()
-    s = symbol.strip()
+    value = symbol.strip()
+    if ":" in value and value.upper().endswith(".P"):
+        return value.upper()
 
-    # Already in TradingView form — only normalise casing.
-    if ":" in s and (s.upper().endswith(".P") or s.upper().endswith(":P")):
-        return s.upper().replace(":P", ".P")
-
-    # Strip the CCXT settlement suffix (`:USDT` etc.)
-    if ":" in s:
-        head, _, _settle = s.partition(":")
-    else:
-        head = s
-
-    # Strip the `/` between base and quote
-    collapsed = head.replace("/", "").upper()
-    if not collapsed:
-        return ""
-
-    return f"{prefix}:{collapsed}.P"
+    market = value.partition(":")[0]
+    collapsed = market.replace("/", "").upper()
+    return f"{prefix}:{collapsed}.P" if collapsed else ""
 
 
 def tradingview_url(symbol: str, exchange_prefix: str = "BINANCE") -> str:
-    """Return the URL-encoded deep link to TradingView's chart page.
-
-    Example:
-        BTC/USDT:USDT → https://www.tradingview.com/chart/?symbol=BINANCE%3ABTCUSDT.P
-    """
-    tv = convert_symbol_to_tradingview(symbol, exchange_prefix)
-    if not tv:
+    tv_symbol = convert_symbol_to_tradingview(symbol, exchange_prefix)
+    if not tv_symbol:
         return ""
-    # `quote` with empty safe list percent-encodes the colon (`:`).
-    return f"https://www.tradingview.com/chart/?symbol={quote(tv, safe='')}"
+    return f"https://www.tradingview.com/chart/?symbol={quote(tv_symbol, safe='')}"
 
 
-# ----------------------------------------------------------------------------
-# HTML report
-# ----------------------------------------------------------------------------
-
-_DARK_CSS = """
+_CSS = """
 :root {
   color-scheme: dark;
-  --bg:        #0f1117;
-  --panel:     #161922;
-  --panel-2:   #1c202b;
-  --border:    #262b38;
-  --text:      #e5e7eb;
-  --muted:     #9ca3af;
-  --dim:       #6b7280;
-  --accent:    #3b82f6;
-  --good:      #22c55e;
-  --bad:       #ef4444;
-  --warn:      #f59e0b;
+  --bg: #090d14;
+  --surface: #101725;
+  --surface-2: #151e2e;
+  --surface-3: #1b2638;
+  --line: #253248;
+  --line-soft: rgba(108, 127, 158, 0.18);
+  --text: #f1f5fb;
+  --muted: #8b98ad;
+  --dim: #647188;
+  --blue: #4387ff;
+  --green: #20d39b;
+  --red: #ff5e72;
+  --yellow: #f1b941;
 }
 * { box-sizing: border-box; }
+html, body { height: 100%; }
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  overflow: hidden;
   background: var(--bg);
   color: var(--text);
-  -webkit-font-smoothing: antialiased;
+  font-family: Inter, "Segoe UI", Arial, sans-serif;
+  letter-spacing: 0;
 }
-header {
-  padding: 16px 24px;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-header h1 { margin: 0; font-size: 16px; letter-spacing: 0.04em; }
-header .meta { color: var(--muted); font-size: 11px; font-family: monospace; }
-main { padding: 16px 24px; display: grid; gap: 16px;
-       grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); }
-.card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-.card-head {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
+button, input { font: inherit; }
+.workspace {
+  height: 100vh;
+  min-height: 640px;
   display: grid;
-  gap: 4px;
+  grid-template-columns: minmax(0, 69%) minmax(380px, 31%);
+  background: var(--bg);
 }
-.card-head .row {
+.chart-side {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: 70px minmax(0, 1fr);
+  border-right: 1px solid var(--line);
+}
+.chart-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 11px 16px 11px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
 }
-.symbol { font-weight: 600; font-size: 14px; }
-.tv-symbol {
-  color: var(--muted);
-  font-family: monospace;
-  font-size: 11px;
-  background: var(--panel-2);
-  padding: 1px 6px;
-  border-radius: 3px;
-}
-.score {
-  font-family: monospace;
-  font-size: 12px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  background: var(--panel-2);
-  color: var(--text);
-  margin-left: auto;
-}
-.score.high { color: var(--good); }
-.score.low  { color: var(--bad); }
-.signals {
+.market-heading { min-width: 0; }
+.market-line {
   display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
 }
-.signal {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  background: var(--panel-2);
+.market-name {
+  overflow: hidden;
+  font-size: 17px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.market-badge {
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
   color: var(--muted);
-  border: 1px solid var(--border);
+  background: var(--surface-2);
+  font: 10px ui-monospace, monospace;
 }
-.signal.warn { color: var(--warn); border-color: rgba(245, 158, 11, 0.4); }
-.signal.bad  { color: var(--bad);  border-color: rgba(239, 68, 68, 0.4); }
-.signal.good { color: var(--good); border-color: rgba(34, 197, 94, 0.4); }
-.open-tv {
-  font-size: 11px;
+.market-subline {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 5px;
+}
+.market-price { font: 16px ui-monospace, monospace; }
+.market-change { font: 13px ui-monospace, monospace; }
+.positive { color: var(--green); }
+.negative { color: var(--red); }
+.chart-actions { display: flex; align-items: center; gap: 9px; }
+.intervals {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.intervals button {
+  width: 42px;
+  height: 31px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+.intervals button:last-child { border-right: 0; }
+.intervals button:hover { color: var(--text); background: var(--surface-3); }
+.intervals button.active { color: white; background: var(--blue); }
+.icon-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 33px;
+  height: 33px;
+  color: var(--blue);
+  border: 1px solid var(--line);
+  border-radius: 6px;
   text-decoration: none;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  padding: 2px 8px;
-  border-radius: 3px;
 }
-.open-tv:hover { background: rgba(59, 130, 246, 0.15); }
-.chart {
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  background: var(--panel-2);
+.icon-link:hover { background: var(--surface-3); }
+.chart-frame {
+  position: relative;
+  min-height: 0;
+  background: #0b0f16;
 }
-footer {
-  padding: 12px 24px;
-  color: var(--dim);
-  font-size: 11px;
-  border-top: 1px solid var(--border);
-  text-align: center;
-}
-.empty {
-  padding: 48px 24px;
-  text-align: center;
+#tradingview_chart { position: absolute; inset: 0; }
+.chart-status {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
   color: var(--muted);
+  background: #0b0f16;
+}
+.chart-status.hidden { display: none; }
+.details-side {
+  position: relative;
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  background: var(--surface);
+}
+.details-head {
+  padding: 15px 17px 13px;
+  border-bottom: 1px solid var(--line);
+}
+.selector-button {
+  width: 100%;
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 11px;
+  color: var(--text);
+  text-align: left;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.selector-button:hover { border-color: #3b4c68; }
+.selector-title { font-weight: 650; }
+.selector-meta {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font: 11px ui-monospace, monospace;
+}
+.selector-chevron { color: var(--muted); font-size: 14px; }
+.asset-picker {
+  position: absolute;
+  top: 73px;
+  left: 12px;
+  right: 12px;
+  z-index: 20;
+  overflow: hidden;
+  background: var(--surface-2);
+  border: 1px solid #35445e;
+  border-radius: 7px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+}
+.asset-picker[hidden] { display: none; }
+.picker-search { padding: 10px; border-bottom: 1px solid var(--line); }
+.picker-search input {
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  outline: none;
+}
+.picker-search input:focus { border-color: var(--blue); }
+.asset-list { max-height: min(560px, calc(100vh - 160px)); overflow: auto; }
+.asset-row {
+  width: 100%;
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 9px 11px;
+  color: var(--text);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  cursor: pointer;
+}
+.asset-row:hover { background: var(--surface-3); }
+.asset-row.active {
+  background: rgba(67, 135, 255, 0.13);
+  box-shadow: inset 3px 0 var(--blue);
+}
+.asset-symbol { font-weight: 620; }
+.asset-tv { margin-top: 3px; color: var(--muted); font: 10px ui-monospace, monospace; }
+.asset-score { color: var(--green); font: 12px ui-monospace, monospace; }
+.tabs {
+  display: flex;
+  overflow-x: auto;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+.tabs button {
+  position: relative;
+  flex: 1 0 auto;
+  height: 46px;
+  padding: 0 12px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.tabs button:hover { color: var(--text); }
+.tabs button.active { color: var(--text); }
+.tabs button.active::after {
+  position: absolute;
+  right: 8px;
+  bottom: 0;
+  left: 8px;
+  height: 2px;
+  content: "";
+  background: var(--blue);
+}
+.tab-content { min-height: 0; overflow: auto; padding: 15px 17px 28px; }
+.tab-panel[hidden] { display: none; }
+.score-strip {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.score-tile {
+  min-width: 0;
+  padding: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.score-label {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.score-value { margin-top: 5px; font: 18px ui-monospace, monospace; }
+.section { margin-top: 17px; }
+.section:first-child { margin-top: 0; }
+.section-title {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+.metric-list {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.metric-row {
+  min-height: 39px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.metric-row:last-child { border-bottom: 0; }
+.metric-name { color: var(--muted); font-size: 12px; }
+.metric-value {
+  overflow: hidden;
+  font: 12px ui-monospace, monospace;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.signal-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.signal-chip {
+  padding: 5px 7px;
+  color: #bfd0ec;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 11px;
+}
+.empty-note {
+  padding: 26px 12px;
+  color: var(--muted);
+  text-align: center;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+}
+.disclaimer {
+  margin-top: 18px;
+  color: var(--dim);
+  font-size: 10px;
+  line-height: 1.5;
+}
+@media (max-width: 900px) {
+  body { overflow: auto; }
+  .workspace {
+    height: auto;
+    min-height: 100vh;
+    grid-template-columns: 1fr;
+  }
+  .chart-side {
+    min-height: 570px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .details-side { min-height: 560px; }
+  .asset-picker { max-height: 70vh; }
+}
+@media (max-width: 560px) {
+  .chart-side { min-height: 520px; grid-template-rows: auto minmax(390px, 1fr); }
+  .chart-header { align-items: flex-start; flex-direction: column; }
+  .chart-actions { width: 100%; justify-content: space-between; }
+  .score-strip { grid-template-columns: 1fr 1fr; }
 }
 """
 
-# JS that runs once per card. It creates one TradingView widget per card.
-# Loaded via the official tv.js library; this requires the browser to be
-# online when the user opens the report.
-_WIDGET_BOOTSTRAP_TEMPLATE = """
-(function () {
-  if (!window.TradingView) return;
-  var cards = __CARDS__;
-  cards.forEach(function (c) {
-    new TradingView.widget({
-      container_id: c.containerId,
-      symbol: c.symbol,
-      interval: c.interval,
-      timezone: "Etc/UTC",
-      theme: "dark",
-      style: "1",
-      locale: "en",
-      toolbar_bg: "#161922",
-      enable_publishing: false,
-      hide_top_toolbar: false,
-      hide_side_toolbar: true,
-      allow_symbol_change: true,
-      autosize: true,
-      studies: ["Volume@tv-basicstudies"]
-    });
-  });
-})();
-"""
+
+def _row_payload(row: ScreenerRow, *, exchange_prefix: str) -> dict:
+    tv_symbol = convert_symbol_to_tradingview(row.symbol, exchange_prefix)
+    return {
+        "symbol": row.symbol,
+        "tvSymbol": tv_symbol,
+        "url": tradingview_url(row.symbol, exchange_prefix),
+        "price": row.price,
+        "score": row.score,
+        "quality": row.quality_score,
+        "change5m": row.change_5m,
+        "change15m": row.change_15m,
+        "change1h": row.change_1h,
+        "volumeCurrent": row.volume_current,
+        "volumeAverage": row.volume_avg,
+        "relativeVolume": row.relative_volume,
+        "volumeZ": row.volume_z,
+        "atr": row.atr,
+        "atrPercent": row.atr_percent,
+        "priceMoveAtr": row.price_move_atr,
+        "volExpansion": row.vol_expansion,
+        "openInterest": row.open_interest,
+        "oiChange": row.oi_change,
+        "fundingRate": row.funding_rate,
+        "derivativesScore": row.derivatives_score,
+        "trendAlignment": row.trend_alignment,
+        "oiConfirmation": row.oi_confirmation,
+        "fundingPressure": row.funding_pressure,
+        "dollarVolume": row.dollar_volume_current,
+        "signals": list(row.signals),
+    }
 
 
-def _classify_signal(signal: str) -> str:
-    """Pick a CSS tone for a signal string."""
-    s = signal.lower()
-    if "extreme" in s or "outlier" in s:
-        return "warn"
-    if s.startswith("oi_decrease") or "selloff" in s:
-        return "bad"
-    if "spike" in s or "expansion" in s or "momentum" in s or s.startswith("oi_increase"):
-        return "good"
-    return ""
-
-
-def _classify_score(score: float) -> str:
-    if score >= 70:
-        return "high"
-    if score <= 30:
-        return "low"
-    return ""
-
-
-def _build_card_html(
-    *,
-    container_id: str,
-    row: ScreenerRow,
-    tv_symbol: str,
-    open_url: str,
-) -> str:
-    """Render the HTML for one card."""
-    signal_chips = "".join(
-        f'<span class="signal {_classify_signal(sig)}">{html.escape(sig)}</span>'
-        for sig in row.signals
-    ) or '<span class="signal">no signals</span>'
-    score_class = _classify_score(row.score)
-    return f"""\
-<article class="card">
-  <div class="card-head">
-    <div class="row">
-      <span class="symbol">{html.escape(row.symbol)}</span>
-      <span class="tv-symbol">{html.escape(tv_symbol)}</span>
-      <span class="score {score_class}">score {row.score:.1f}</span>
-    </div>
-    <div class="row signals">{signal_chips}</div>
-    <div class="row">
-      <a class="open-tv" target="_blank" rel="noopener noreferrer" href="{html.escape(open_url)}">Open TradingView</a>
-    </div>
-  </div>
-  <div class="chart" id="{html.escape(container_id)}"></div>
-</article>"""
-
-
-def _ensure_parent_dir(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _asset_rows(items: Sequence[dict]) -> str:
+    return "\n".join(
+        f"""<button class="asset-row" type="button" data-index="{index}">
+  <span>
+    <span class="asset-symbol">{html.escape(str(item["symbol"]))}</span>
+    <span class="asset-tv">{html.escape(str(item["tvSymbol"]))}</span>
+  </span>
+  <span class="asset-score">{float(item["score"]):.1f}</span>
+</button>"""
+        for index, item in enumerate(items)
+    )
 
 
 def generate_tradingview_report(
@@ -294,81 +431,330 @@ def generate_tradingview_report(
     exchange_prefix: str = "BINANCE",
     interval: str = "60",
     top: Optional[int] = None,
-    title: str = "TradingView report",
+    title: str = "crypto_screener — TradingView workspace",
 ) -> Path:
-    """Write a self-contained HTML report with one TradingView widget per row.
-
-    Args:
-        rows: ScreenerRow objects, typically the already-sorted top-N.
-        output_path: Destination path (relative paths are resolved against cwd).
-        exchange_prefix: TradingView exchange prefix (e.g. "BINANCE").
-        interval: TradingView interval value, e.g. "60" = 1h, "15" = 15m.
-        top: Optional slice limit; when None all rows are rendered.
-        title: Page title.
-
-    Returns:
-        The resolved Path of the file written.
-    """
-    rendered_rows: List[ScreenerRow] = list(rows)
+    """Create a chart-first workspace with analytics for every selected asset."""
+    rendered_rows = list(rows)
     if top is not None:
         rendered_rows = rendered_rows[:top]
 
-    out = Path(output_path)
-    _ensure_parent_dir(out)
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
 
-    # Empty state — still produce a file so the user has something to open.
     if not rendered_rows:
-        body = f"""<header><h1>{html.escape(title)}</h1></header>
-<div class="empty">No rows in top results — nothing to chart.</div>"""
-        out.write_text(_html_shell(title=title, head_extras="", body=body, scripts=""), encoding="utf-8")
-        logger.info("TradingView report (empty state) written to %s", out)
-        return out
+        output.write_text(
+            _shell(
+                title,
+                '<div class="empty-note">No rows in top results — nothing to chart.</div>',
+                "",
+            ),
+            encoding="utf-8",
+        )
+        return output
 
-    cards_html: List[str] = []
-    bootstrap_cards: List[dict] = []
-    for i, row in enumerate(rendered_rows):
-        tv_symbol = convert_symbol_to_tradingview(row.symbol, exchange_prefix)
-        if not tv_symbol:
-            continue
-        container_id = f"tv_chart_{i}"
-        cards_html.append(_build_card_html(
-            container_id=container_id,
-            row=row,
-            tv_symbol=tv_symbol,
-            open_url=tradingview_url(row.symbol, exchange_prefix),
-        ))
-        bootstrap_cards.append({
-            "containerId": container_id,
-            "symbol": tv_symbol,
-            "interval": interval,
-        })
+    items = [
+        _row_payload(row, exchange_prefix=exchange_prefix)
+        for row in rendered_rows
+        if convert_symbol_to_tradingview(row.symbol, exchange_prefix)
+    ]
+    safe_json = json.dumps(items, ensure_ascii=False).replace("<", "\\u003c")
 
-    body = f"""<header>
-  <h1>{html.escape(title)}</h1>
-  <span class="meta">exchange={html.escape(exchange_prefix)} · interval={html.escape(interval)} · rows={len(bootstrap_cards)}</span>
-</header>
-<main>
-{chr(10).join(cards_html)}
-</main>
-<footer>Charts are streamed from TradingView. Open this file in a browser with internet access.</footer>"""
+    body = f"""<main class="workspace">
+  <section class="chart-side">
+    <header class="chart-header">
+      <div class="market-heading">
+        <div class="market-line">
+          <span class="market-name" id="market_name">Loading market</span>
+          <span class="market-badge">USDT PERP</span>
+        </div>
+        <div class="market-subline">
+          <span class="market-price" id="market_price">—</span>
+          <span class="market-change" id="market_change">—</span>
+        </div>
+      </div>
+      <div class="chart-actions">
+        <div class="intervals" aria-label="Chart interval">
+          <button type="button" data-interval="5">5m</button>
+          <button type="button" data-interval="15">15m</button>
+          <button type="button" data-interval="60" class="active">1h</button>
+          <button type="button" data-interval="240">4h</button>
+          <button type="button" data-interval="D">1D</button>
+        </div>
+        <a class="icon-link" id="open_tv" href="#" target="_blank" rel="noopener noreferrer"
+           title="Open in TradingView" aria-label="Open in TradingView">↗</a>
+      </div>
+    </header>
+    <div class="chart-frame">
+      <div class="chart-status" id="chart_status">Loading TradingView chart…</div>
+      <div id="tradingview_chart"></div>
+    </div>
+  </section>
 
-    scripts = f"""<script src="https://s3.tradingview.com/tv.js"></script>
-<script>{_WIDGET_BOOTSTRAP_TEMPLATE.replace("__CARDS__", json.dumps(bootstrap_cards))}</script>"""
+  <aside class="details-side">
+    <div class="details-head">
+      <button class="selector-button" id="selector_button" type="button" aria-expanded="false">
+        <span>
+          <span class="selector-title" id="selector_title">Select market</span>
+          <span class="selector-meta" id="selector_meta">{html.escape(exchange_prefix)} · {len(items)} markets</span>
+        </span>
+        <span class="selector-chevron">⌄</span>
+      </button>
+    </div>
 
-    out.write_text(_html_shell(title=title, head_extras="", body=body, scripts=scripts), encoding="utf-8")
-    logger.info("TradingView report written to %s (%d cards)", out, len(bootstrap_cards))
-    return out
+    <div class="asset-picker" id="asset_picker" hidden>
+      <div class="picker-search">
+        <input id="asset_search" type="search" placeholder="Search symbol…" aria-label="Search symbol">
+      </div>
+      <div class="asset-list" id="asset_list">
+        {_asset_rows(items)}
+      </div>
+    </div>
+
+    <nav class="tabs" aria-label="Asset analytics">
+      <button type="button" class="active" data-tab="overview">Overview</button>
+      <button type="button" data-tab="structure">Structure</button>
+      <button type="button" data-tab="derivatives">Derivatives</button>
+      <button type="button" data-tab="signals">Signals</button>
+    </nav>
+
+    <div class="tab-content">
+      <section class="tab-panel" data-panel="overview">
+        <div class="score-strip">
+          <div class="score-tile"><div class="score-label">Composite</div><div class="score-value" id="score_value">—</div></div>
+          <div class="score-tile"><div class="score-label">Quality</div><div class="score-value" id="quality_value">—</div></div>
+          <div class="score-tile"><div class="score-label">Derivatives</div><div class="score-value" id="derivatives_value">—</div></div>
+        </div>
+        <div class="section">
+          <div class="section-title">Price movement</div>
+          <div class="metric-list" id="overview_metrics"></div>
+        </div>
+        <div class="section">
+          <div class="section-title">Volume</div>
+          <div class="metric-list" id="volume_metrics"></div>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-panel="structure" hidden>
+        <div class="section">
+          <div class="section-title">Market structure</div>
+          <div class="metric-list" id="structure_metrics"></div>
+        </div>
+        <div class="section">
+          <div class="section-title">Volatility</div>
+          <div class="metric-list" id="volatility_metrics"></div>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-panel="derivatives" hidden>
+        <div class="section">
+          <div class="section-title">Positioning</div>
+          <div class="metric-list" id="derivative_metrics"></div>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-panel="signals" hidden>
+        <div class="section">
+          <div class="section-title">Detected observations</div>
+          <div class="signal-list" id="signal_list"></div>
+        </div>
+        <p class="disclaimer">Analytical observations only. This screen does not provide financial advice or place trades.</p>
+      </section>
+    </div>
+  </aside>
+</main>"""
+
+    script = f"""<script src="https://s3.tradingview.com/tv.js"></script>
+<script>
+(() => {{
+  const assets = {safe_json};
+  const defaultInterval = {json.dumps(interval)};
+  let selectedIndex = 0;
+  let selectedInterval = defaultInterval;
+  let renderToken = 0;
+
+  const byId = (id) => document.getElementById(id);
+  const picker = byId("asset_picker");
+  const pickerButton = byId("selector_button");
+  const chart = byId("tradingview_chart");
+  const status = byId("chart_status");
+
+  const number = (value, digits = 2) =>
+    value === null || value === undefined || Number.isNaN(value)
+      ? "—"
+      : Number(value).toLocaleString(undefined, {{ maximumFractionDigits: digits }});
+  const signed = (value, digits = 2, suffix = "%") =>
+    value === null || value === undefined
+      ? "—"
+      : `${{value >= 0 ? "+" : ""}}${{Number(value).toFixed(digits)}}${{suffix}}`;
+  const metricRow = (name, value, tone = "") =>
+    `<div class="metric-row"><span class="metric-name">${{name}}</span><span class="metric-value ${{tone}}">${{value}}</span></div>`;
+
+  function fillMetrics(asset) {{
+    byId("score_value").textContent = number(asset.score, 1);
+    byId("quality_value").textContent = number(asset.quality, 1);
+    byId("derivatives_value").textContent = number(asset.derivativesScore, 1);
+
+    byId("overview_metrics").innerHTML = [
+      metricRow("Change 5m", signed(asset.change5m), asset.change5m >= 0 ? "positive" : "negative"),
+      metricRow("Change 15m", signed(asset.change15m), asset.change15m >= 0 ? "positive" : "negative"),
+      metricRow("Change 1h", signed(asset.change1h), asset.change1h >= 0 ? "positive" : "negative"),
+      metricRow("Move in ATR", asset.priceMoveAtr == null ? "—" : `${{number(asset.priceMoveAtr)}}x`)
+    ].join("");
+    byId("volume_metrics").innerHTML = [
+      metricRow("Relative volume", `${{number(asset.relativeVolume)}}x`),
+      metricRow("Volume z-score", number(asset.volumeZ)),
+      metricRow("Current volume", number(asset.volumeCurrent, 0)),
+      metricRow("Dollar volume", asset.dollarVolume == null ? "—" : `$${{number(asset.dollarVolume, 0)}}`)
+    ].join("");
+    byId("structure_metrics").innerHTML = [
+      metricRow("Trend alignment", asset.trendAlignment || "—"),
+      metricRow("OI confirmation", asset.oiConfirmation || "—"),
+      metricRow("TradingView market", asset.tvSymbol)
+    ].join("");
+    byId("volatility_metrics").innerHTML = [
+      metricRow("ATR", number(asset.atr, 6)),
+      metricRow("ATR %", asset.atrPercent == null ? "—" : `${{number(asset.atrPercent)}}%`),
+      metricRow("Volatility expansion", `${{number(asset.volExpansion)}}x`)
+    ].join("");
+    byId("derivative_metrics").innerHTML = [
+      metricRow("Open interest", number(asset.openInterest, 0)),
+      metricRow("OI change", signed(asset.oiChange), asset.oiChange >= 0 ? "positive" : "negative"),
+      metricRow("Funding rate", signed(asset.fundingRate, 4), asset.fundingRate >= 0 ? "positive" : "negative"),
+      metricRow("Funding pressure", asset.fundingPressure == null ? "—" : `${{number(asset.fundingPressure)}}x`),
+      metricRow("Derivatives score", number(asset.derivativesScore, 1))
+    ].join("");
+    byId("signal_list").innerHTML = asset.signals.length
+      ? asset.signals.map((signal) => `<span class="signal-chip">${{signal}}</span>`).join("")
+      : '<div class="empty-note">No strong observations for this market.</div>';
+  }}
+
+  function renderChart() {{
+    const token = ++renderToken;
+    const asset = assets[selectedIndex];
+    if (!asset) return;
+
+    byId("market_name").textContent = asset.symbol;
+    byId("market_price").textContent = `$${{number(asset.price, 8)}}`;
+    const change = byId("market_change");
+    change.textContent = signed(asset.change1h);
+    change.className = `market-change ${{asset.change1h >= 0 ? "positive" : "negative"}}`;
+    byId("selector_title").textContent = asset.symbol;
+    byId("selector_meta").textContent = `${{asset.tvSymbol}} · Score ${{number(asset.score, 1)}}`;
+    byId("open_tv").href = asset.url;
+    fillMetrics(asset);
+
+    document.querySelectorAll(".asset-row").forEach((row) => {{
+      row.classList.toggle("active", Number(row.dataset.index) === selectedIndex);
+    }});
+
+    status.textContent = "Loading TradingView chart…";
+    status.classList.remove("hidden");
+    chart.replaceChildren();
+    const container = document.createElement("div");
+    container.id = `tv_active_${{token}}`;
+    container.style.width = "100%";
+    container.style.height = "100%";
+    chart.appendChild(container);
+
+    if (!window.TradingView) {{
+      status.textContent = "TradingView is unavailable. Check browser internet access.";
+      return;
+    }}
+    new TradingView.widget({{
+      container_id: container.id,
+      symbol: asset.tvSymbol,
+      interval: selectedInterval,
+      timezone: "Etc/UTC",
+      theme: "dark",
+      style: "1",
+      locale: "en",
+      enable_publishing: false,
+      allow_symbol_change: false,
+      hide_side_toolbar: false,
+      autosize: true,
+      studies: ["Volume@tv-basicstudies"]
+    }});
+    window.setTimeout(() => {{
+      if (token === renderToken) status.classList.add("hidden");
+    }}, 1800);
+  }}
+
+  function selectAsset(index) {{
+    selectedIndex = index;
+    picker.hidden = true;
+    pickerButton.setAttribute("aria-expanded", "false");
+    renderChart();
+    const url = new URL(window.location.href);
+    url.searchParams.set("asset", assets[index].tvSymbol);
+    history.replaceState({{ asset: assets[index].tvSymbol }}, "", url);
+  }}
+
+  pickerButton.addEventListener("click", () => {{
+    picker.hidden = !picker.hidden;
+    pickerButton.setAttribute("aria-expanded", String(!picker.hidden));
+    if (!picker.hidden) byId("asset_search").focus();
+  }});
+  byId("asset_list").addEventListener("click", (event) => {{
+    const row = event.target.closest(".asset-row");
+    if (row) selectAsset(Number(row.dataset.index));
+  }});
+  byId("asset_search").addEventListener("input", (event) => {{
+    const query = event.target.value.trim().toLowerCase();
+    document.querySelectorAll(".asset-row").forEach((row) => {{
+      const asset = assets[Number(row.dataset.index)];
+      row.hidden = !(`${{asset.symbol}} ${{asset.tvSymbol}}`.toLowerCase().includes(query));
+    }});
+  }});
+  document.addEventListener("click", (event) => {{
+    if (!picker.hidden && !picker.contains(event.target) && !pickerButton.contains(event.target)) {{
+      picker.hidden = true;
+      pickerButton.setAttribute("aria-expanded", "false");
+    }}
+  }});
+  document.querySelector(".intervals").addEventListener("click", (event) => {{
+    const button = event.target.closest("button[data-interval]");
+    if (!button) return;
+    selectedInterval = button.dataset.interval;
+    document.querySelectorAll(".intervals button").forEach((item) => {{
+      item.classList.toggle("active", item === button);
+    }});
+    renderChart();
+  }});
+  document.querySelector(".tabs").addEventListener("click", (event) => {{
+    const button = event.target.closest("button[data-tab]");
+    if (!button) return;
+    document.querySelectorAll(".tabs button").forEach((item) => item.classList.toggle("active", item === button));
+    document.querySelectorAll(".tab-panel").forEach((panel) => {{
+      panel.hidden = panel.dataset.panel !== button.dataset.tab;
+    }});
+  }});
+  document.addEventListener("keydown", (event) => {{
+    if (event.key === "Escape") {{
+      picker.hidden = true;
+      pickerButton.setAttribute("aria-expanded", "false");
+    }}
+  }});
+
+  const requested = new URL(window.location.href).searchParams.get("asset");
+  const requestedIndex = assets.findIndex((asset) => asset.tvSymbol === requested);
+  if (requestedIndex >= 0) selectedIndex = requestedIndex;
+  renderChart();
+}})();
+</script>"""
+
+    output.write_text(_shell(title, body, script), encoding="utf-8")
+    logger.info("TradingView workspace written to %s (%d markets)", output, len(items))
+    return output
 
 
-def _html_shell(*, title: str, head_extras: str, body: str, scripts: str) -> str:
+def _shell(title: str, body: str, scripts: str) -> str:
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{html.escape(title)}</title>
-  <style>{_DARK_CSS}</style>
-  {head_extras}
+  <style>{_CSS}</style>
 </head>
 <body>
 {body}
@@ -377,14 +763,8 @@ def _html_shell(*, title: str, head_extras: str, body: str, scripts: str) -> str
 </html>"""
 
 
-# ----------------------------------------------------------------------------
-# Public helper for the console layer
-# ----------------------------------------------------------------------------
-
-def annotate_rows_with_tv_symbol(rows: Iterable[ScreenerRow], exchange_prefix: str = "BINANCE") -> List[tuple[ScreenerRow, str]]:
-    """Convenience: pair each row with its TradingView symbol.
-
-    Useful for renderers that want to print `tv_symbol` alongside the row
-    without us mutating `ScreenerRow`.
-    """
-    return [(r, convert_symbol_to_tradingview(r.symbol, exchange_prefix)) for r in rows]
+def annotate_rows_with_tv_symbol(
+    rows: Iterable[ScreenerRow],
+    exchange_prefix: str = "BINANCE",
+) -> List[tuple[ScreenerRow, str]]:
+    return [(row, convert_symbol_to_tradingview(row.symbol, exchange_prefix)) for row in rows]

@@ -28,8 +28,8 @@ def collect_live_inputs(
 
     Args:
         symbols: Optional explicit list of ccxt symbols (e.g. ["BTC/USDT:USDT", ...]).
-        universe_limit: When `symbols` is None, the top-N by alphabetical order.
-            Kept conservative in MVP to stay polite with rate limits.
+        universe_limit: When `symbols` is None, the top-N by reported 24h
+            quote volume. Kept conservative to stay polite with rate limits.
         candle_limit: Number of 1-minute candles to fetch per symbol.
         config: Optional BinanceConfig (api keys not required for public data).
     """
@@ -50,10 +50,7 @@ def collect_live_inputs(
             continue
 
         oi_current = client.fetch_open_interest(symbol)
-        # Approximate "1h ago" OI: use the close-volume relationship of the
-        # earliest candle as a placeholder. For MVP we accept a small bias here;
-        # a future iteration can pull a real OI history endpoint.
-        oi_prev = oi_current * 0.99 if oi_current > 0 else 0.0
+        oi_prev = client.fetch_open_interest_previous(symbol, timeframe="1h")
 
         funding = client.fetch_funding_rate(symbol)
 

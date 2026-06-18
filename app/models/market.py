@@ -43,9 +43,9 @@ class MarketScanInput:
     symbol: str
     candles: List[Candle]
     # Derivatives snapshot
-    open_interest_current: float
-    open_interest_prev: float   # roughly 1h prior, for OI change %
-    funding_rate: float           # per-funding-interval rate (e.g. 0.0001 = 0.01%)
+    open_interest_current: Optional[float]
+    open_interest_prev: Optional[float]   # real historical OI, never fabricated
+    funding_rate: Optional[float]         # per-funding-interval rate (e.g. 0.0001 = 0.01%)
 
 
 @dataclass
@@ -66,10 +66,10 @@ class ScreenerRow:
     volume_z: float            # z-score vs rolling history
     atr: float                 # average true range over recent window
     vol_expansion: float       # latest range / avg range
-    open_interest: float
-    oi_change: float           # %
-    funding_rate: float        # %
-    derivatives_score: float   # 0-100 composite from OI + funding
+    open_interest: Optional[float]
+    oi_change: Optional[float]           # %
+    funding_rate: Optional[float]        # %
+    derivatives_score: Optional[float]   # 0-100 composite from OI + funding
     score: float = 0.0         # 0-100 overall, filled by scoring module
     signals: List[str] = field(default_factory=list)
     # --- Quality metrics (filled by app/signals/detector.enrich_with_quality) ---
